@@ -121,6 +121,31 @@ def _fetch_results(topic, limit=3):
     return results
 
 
+def news_headlines(topic=None, limit=3):
+    """
+    v7: top news headlines as spoken-ready lines, via the same http_get
+    choke point and the same result parser as web search (DuckDuckGo's
+    HTML results answer news-ish queries well). The default topic is
+    "top news today"; pass a topic for focused headlines. Returns a
+    list of "Title - snippet" strings - EMPTY on any failure, and it
+    never raises: the morning briefing simply omits a news section
+    when the headlines could not be fetched.
+    """
+    query = (topic or "").strip() or "top news today"
+    try:
+        html_text = http_get(_ddg_search_url(query))
+        results = parse_ddg_results(html_text, limit=limit)
+    except Exception:
+        return []
+    lines = []
+    for r in results:
+        line = r["title"]
+        if r.get("snippet"):
+            line += " - " + r["snippet"]
+        lines.append(line)
+    return lines
+
+
 def _results_spoken(results):
     bits = []
     for r in results:

@@ -96,6 +96,7 @@ def main():
     jarvis_butler._reset_for_tests()
     _fake_providers(jobs=0)
     called = []
+    _real_briefing_fn = jarvis_butler._morning_briefing
     jarvis_butler._morning_briefing = lambda: called.append(1) or "BRIEFING"
     alerts = jarvis_butler.collect_alerts(now=NOW)
     offer = [a for a in alerts if "morning briefing" in a["text"]][0]
@@ -104,6 +105,7 @@ def main():
     out = jarvis_butler.handle_response("no")
     check("no dismisses the suggestion", out == ("dismissed", None), repr(out))
     check("dismissed action never ran", called == [])
+    jarvis_butler._morning_briefing = _real_briefing_fn
 
     # ---- a non-answer expires the suggestion and falls through ----
     jarvis_butler._reset_for_tests()
@@ -128,6 +130,63 @@ def main():
           any("was due 30 minutes ago" in t for t in texts), repr(texts))
     check("due-now reminder phrasing",
           any("is due now" in t for t in texts), repr(texts))
+
+    # ---- v7: composed morning briefing (news + stocks) ----
+    import jarvis_market
+    import jarvis_web
+    real_market = jarvis_market.market_briefing
+    real_news = jarvis_web.news_headlines
+    try:
+        _fake_providers(jobs=0)
+        jarvis_market.market_briefing = lambda: "Nifty is up 0.4%. NVDA is up 2.1%."
+        jarvis_web.news_headlines = lambda topic=None, limit=3: [
+            "City wins big grant - The city announced a grant.",
+            "Markets steady - Stocks were flat.",
+            "Local lab expands - A lab is hiring.",
+        ]
+        text = jarvis_butler.morning_briefing_text(now=NOW)
+        check("briefing: greets with the date",
+              text.startswith("Good morning, Umesh. It's Monday, October 26"),
+              text)
+        check("briefing: includes reminders and calendar",
+              "Call Kiran" in text and "Team standup" in text, text)
+        check("briefing: includes the market snapshot",
+              "Markets:" in text and "NVDA" in text, text)
+        check("briefing: includes top news headlines",
+              "In the news:" in text and "City wins big grant" in text, text)
+        check("briefing: stays speakable (~150 words max)",
+              len(text.split()) <= 155, f"{len(text.split())} words")
+
+        def _boom(*a, **k):
+            raise RuntimeError("source down")
+
+        jarvis_web.news_headlines = _boom
+        text = jarvis_butler.morning_briefing_text(now=NOW)
+        check("briefing: news failure -> briefing still produced, no news section",
+              text and "In the news" not in text and "Markets:" in text, text)
+        jarvis_market.market_briefing = _boom
+        jarvis_web.news_headlines = real_news
+        jarvis_web.news_headlines = lambda topic=None, limit=3: ["One headline - x."]
+        jarvis_butler.reminders_due = lambda window_min=30: []
+        jarvis_butler.events_starting = lambda window_min=30: []
+        text = jarvis_butler.morning_briefing_text(now=NOW)
+        check("briefing: market failure -> omitted, other sections survive",
+              "Markets:" not in text and "In the news:" in text, text)
+        jarvis_web.news_headlines = _boom
+        check("briefing: every source down -> empty (caller falls back)",
+              jarvis_butler.morning_briefing_text(now=NOW) == "")
+        import jarvis_actions
+        real_actions_brief = jarvis_actions.morning_briefing
+        jarvis_actions.morning_briefing = lambda: "FALLBACK BRIEFING"
+        try:
+            check("briefing: action falls back to the v3 briefing",
+                  jarvis_butler._morning_briefing() == "FALLBACK BRIEFING")
+        finally:
+            jarvis_actions.morning_briefing = real_actions_brief
+    finally:
+        jarvis_market.market_briefing = real_market
+        jarvis_web.news_headlines = real_news
+        _fake_providers(jobs=0)
 
     print(f"\n{len(PASSED)}/{len(PASSED)} butler tests passed.")
 

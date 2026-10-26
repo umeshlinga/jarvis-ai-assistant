@@ -41,6 +41,7 @@ import wave
 import jarvis_butler
 import jarvis_config
 import jarvis_hud
+import jarvis_notify
 import jarvis_tasks
 
 SAMPLE_RATE = 16000
@@ -986,10 +987,51 @@ def _butler_response(q_clean, no_speak=False):
     return True
 
 
+def _start_notify():
+    """Start the v6 notification + pop-up watcher for this loop."""
+    try:
+        jarvis_notify.start()
+    except Exception:
+        pass
+
+
+def _strip_wake_keep_case(text):
+    """Wake-word-stripped text with his original casing kept (dictation)."""
+    try:
+        wake = str(jarvis_config.load_config().get("wake_word", "jarvis"))
+    except Exception:
+        wake = "jarvis"
+    out = text or ""
+    if wake:
+        out = re.sub(r"(?i)\b" + re.escape(wake) + r"\b", "", out, count=1)
+    return out.strip(" ,.!?")
+
+
+def _notify_response(q_clean, raw=None, no_speak=False):
+    """
+    v6: notification pending states (reply dictation, a typed reply
+    awaiting "send it", a pop-up awaiting a button name) interpret this
+    utterance FIRST - before the butler's suggestions, because a reply
+    he was just asked about is the freshest thing on his mind. Returns
+    True when the utterance was consumed.
+    """
+    try:
+        handled = jarvis_notify.handle_response(q_clean, raw=raw)
+    except Exception:
+        return False
+    if handled is None:
+        return False
+    outcome, payload = handled
+    if outcome == "acted" and payload:
+        present_reply(payload, no_speak=no_speak, source="action")
+    return True
+
+
 def text_loop(no_speak=False):
     print("Text mode - type a command, or 'quit' to exit.")
     _register_announcer(no_speak=no_speak)
     _start_butler(no_speak=no_speak)
+    _start_notify()
     _maybe_open_hud()
     _hud_emit("state", "idle")
     while True:
@@ -1005,6 +1047,10 @@ def text_loop(no_speak=False):
             speak("Goodbye!", no_speak=no_speak)
             break
         _hud_emit("heard", user_input)
+        if _notify_response(user_input.lower().strip(" .,!?"), raw=user_input,
+                             no_speak=no_speak):
+            _hud_emit("state", "idle")
+            continue
         if _butler_response(user_input.lower().strip(" .,!?"), no_speak=no_speak):
             _hud_emit("state", "idle")
             continue
@@ -1049,11 +1095,12 @@ def listen_loop(no_speak=False):
     owner = cfg.get("owner_name", "Umesh")
     _register_announcer(no_speak=no_speak)
     _start_butler(no_speak=no_speak)
+    _start_notify()
     if not no_speak:
         _stop_listen_enabled = True  # v5 barge-in: he can say "stop" mid-speech
     _maybe_open_hud()
     print("\n" + "=" * 54)
-    print("  JARVIS AI ASSISTANT v5 - AUTONOMOUS BUTLER - IS LISTENING")
+    print("  JARVIS AI ASSISTANT v6 - EYES & HANDS - IS LISTENING")
     print(f"  Welcome, {owner}. Say commands like:")
     print("    - 'Jarvis, open VS Code' / 'open ChatGPT' / 'open LinkedIn'")
     print("    - 'Play lofi on YouTube'")
@@ -1070,6 +1117,8 @@ def listen_loop(no_speak=False):
     print("    - 'Show me the job openings in Indianapolis in bioinformatics'")
     print("    - 'Create a python file called hello that prints the date'")
     print("    - 'Run it' / 'Fix it' / 'What are you doing' (background tasks)")
+    print("    - 'What did I miss' (important notifications Jarvis caught)")
+    print("    - 'Do this task: ...' (agent mode - Jarvis plans and chains tools)")
     print("    - 'Show yourself' (opens the live HUD) / 'Open browser'")
     print("  Actions are done silently now - Jarvis speaks only to tell you")
     print("  something. Say 'stop' while he talks to cut him off.")
@@ -1103,6 +1152,9 @@ def listen_loop(no_speak=False):
             if q_clean in ("quit", "exit", "goodbye", "stop listening"):
                 speak("Goodbye!", no_speak=no_speak)
                 break
+            if _notify_response(q_clean, raw=_strip_wake_keep_case(query),
+                                no_speak=no_speak):
+                continue
             if _butler_response(q_clean, no_speak=no_speak):
                 continue
             if _is_pure_stop(q_clean):

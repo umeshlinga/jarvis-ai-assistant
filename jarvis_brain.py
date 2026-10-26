@@ -178,6 +178,33 @@ def active_provider():
     return available[0] if available else None
 
 
+def deep_providers_available():
+    """
+    v7 brain split: providers for DEEP work - advisory answers,
+    complete(deep=True), and the v6 agent loop. Config deep_provider:
+    - "auto" (default): when an OpenAI key exists, OpenAI takes deep
+      work first (the stronger, Muse-class brain for tasks), with
+      Groq as the fallback; FAST chat and the speech-to-text ears stay
+      on Groq (free + fast) regardless.
+    - "groq" / "openai": force that side first.
+    Without an OpenAI key this returns exactly providers_available(),
+    so a Groq-only install behaves precisely as before.
+    """
+    avail = providers_available()
+    try:
+        mode = str(jarvis_config.load_config().get(
+            "deep_provider", "auto")).lower()
+    except Exception:
+        mode = "auto"
+    if mode == "groq":
+        return [p for p in avail if p == "groq"] or avail
+    if mode == "openai":
+        return [p for p in avail if p == "openai"] or avail
+    if "openai" in avail:
+        return ["openai"] + [p for p in avail if p != "openai"]
+    return avail
+
+
 def ready():
     """True if a cloud brain is configured and not currently rate-limited."""
     if not providers_available():
@@ -266,7 +293,12 @@ def _models_for(provider, tier="deep"):
         else:
             models = deep
     else:
-        models = [str(cfg.get("openai_model") or "gpt-4.1-mini")]
+        # v7: the configured OpenAI model (default gpt-4.1) first, with
+        # gpt-4.1-mini as the automatic fallback when the big model
+        # errors - his $10 credit goes further and deep work degrades
+        # gracefully instead of failing.
+        primary = str(cfg.get("openai_model") or "gpt-4.1")
+        models = [primary] + [m for m in ("gpt-4.1-mini",) if m != primary]
     alive = [m for m in models if m not in _dead_models]
     return alive or models
 
@@ -287,7 +319,12 @@ def _complete_msgs(msgs, tier="fast", max_tokens=450):
     """
     if time.time() < _cooldown_until:
         return None
-    for provider in providers_available():
+    # v7 split: deep tier runs on the deep providers (OpenAI first when
+    # a key exists); the fast tier keeps the configured provider order
+    # (Groq first - free and fast).
+    providers = deep_providers_available() if tier == "deep" \
+        else providers_available()
+    for provider in providers:
         try:
             client = _get_client(provider)
         except Exception as e:
@@ -385,6 +422,20 @@ def think(q, confirm=None):
         if local_done:
             _last_source = "action"
             return local_done
+
+    # 2b. v6 "Muse mode": a multi-step goal no single action handled
+    # goes to the tool-using agent loop (jarvis_agent) before plain
+    # chat. Returns None when not triggered, when the agent is off, or
+    # when no model accepts tools - plain chat then proceeds as usual.
+    if not is_advisory(q) and time.time() >= _cooldown_until:
+        try:
+            import jarvis_agent
+            agent_reply = jarvis_agent.maybe_agent(q, confirm=confirm)
+        except Exception:
+            agent_reply = None
+        if agent_reply:
+            _last_source = "action"
+            return agent_reply
 
     # 3. Cloud providers in configured order. Two speeds (v4): everyday
     #    chat runs on the fast tier; advisory/deep questions on the deep

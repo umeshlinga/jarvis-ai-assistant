@@ -194,6 +194,34 @@ def main():
         jarvis_web.open_url = orig_open_url
         jarvis_web.http_get = lambda url, timeout=10: DDG_HTML
 
+    # ---- v7: news headlines for the morning briefing ----
+    NEWS_HTML = (
+        '<div class="result"><h2><a class="result__a" '
+        'href="//duckduckgo.com/l/?uddg=https%3A%2F%2Fnews.example%2F1">'
+        'City wins big grant</a></h2>'
+        '<a class="result__snippet">The city announced a new grant today.</a></div>'
+        '<div class="result"><h2><a class="result__a" '
+        'href="//duckduckgo.com/l/?uddg=https%3A%2F%2Fnews.example%2F2">'
+        'Markets steady at open</a></h2>'
+        '<a class="result__snippet">Stocks were flat in early trading.</a></div>'
+        '<div class="result"><h2><a class="result__a" '
+        'href="//duckduckgo.com/l/?uddg=https%3A%2F%2Fnews.example%2F3">'
+        'Local lab expands</a></h2>'
+        '<a class="result__snippet">A research lab is hiring scientists.</a></div>'
+    )
+    jarvis_web.http_get = lambda url, timeout=10: NEWS_HTML
+    heads = jarvis_web.news_headlines()
+    check("news: headlines parsed from the search page",
+          len(heads) == 3 and heads[0].startswith("City wins big grant")
+          and "new grant today" in heads[0])
+    check("news: a topic is honoured",
+          jarvis_web.news_headlines("science news", limit=2)
+          and len(jarvis_web.news_headlines("science news", limit=2)) == 2)
+    jarvis_web.http_get = boom2
+    check("news: fetch failure -> empty list, never raises",
+          jarvis_web.news_headlines() == [])
+    jarvis_web.http_get = lambda url, timeout=10: DDG_HTML
+
     print(f"\n{len(PASSED)}/{len(PASSED)} web tests passed.")
 
 

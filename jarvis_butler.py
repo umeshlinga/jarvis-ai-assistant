@@ -169,7 +169,88 @@ def _open_job_results():
         "show me the job openings in Indianapolis in bioinformatics")
 
 
+def _trim_words(text, limit=150):
+    """Trim a briefing to ~`limit` words at a sentence boundary."""
+    words = (text or "").split()
+    if len(words) <= limit:
+        return text
+    cut = " ".join(words[:limit])
+    for end in (". ", "! ", "? "):
+        idx = cut.rfind(end)
+        if idx > len(cut) // 2:
+            return cut[:idx + 1]
+    return cut.rstrip() + "…"
+
+
+def morning_briefing_text(now=None):
+    """
+    v7: the composed morning briefing - greeting + date/time, today's
+    reminders and calendar (the butler's own providers), a market
+    snapshot (jarvis_market, guarded), and the top 3 news headlines
+    (jarvis_web.news_headlines, guarded). Every section is omitted
+    gracefully when its source fails; there is deliberately NO weather
+    section - Jarvis has no weather source and never invents one.
+    Kept speakable: ~150 words maximum.
+    """
+    cfg = jarvis_config.load_config()
+    try:
+        owner = str(cfg.get("owner_name", "Umesh"))
+    except Exception:
+        owner = "Umesh"
+    now = now or datetime.datetime.now()
+    when = now.strftime("%A, %B %d").replace(" 0", " ")
+    clock = now.strftime("%I:%M %p").lstrip("0")
+    parts = [f"Good morning, {owner}. It's {when}, {clock}."]
+    sections = 0
+
+    try:
+        rems = reminders_due(12 * 60)
+        if rems:
+            sections += 1
+            names = ", ".join(t for t, _ in rems[:3])
+            parts.append(f"You have {len(rems)} reminder"
+                         f"{'s' if len(rems) != 1 else ''} due today: {names}.")
+    except Exception:
+        pass
+    try:
+        evs = events_starting(12 * 60)
+        if evs:
+            sections += 1
+            bits = []
+            for title, secs in evs[:3]:
+                at = (now + datetime.timedelta(seconds=secs)).strftime("%I:%M %p").lstrip("0")
+                bits.append(f"{title} at {at}")
+            parts.append("On your calendar: " + ", ".join(bits) + ".")
+    except Exception:
+        pass
+    try:
+        import jarvis_market
+        snap = jarvis_market.market_briefing()
+        if snap and str(snap).strip():
+            sections += 1
+            parts.append("Markets: " + str(snap).strip())
+    except Exception:
+        pass
+    try:
+        import jarvis_web
+        heads = jarvis_web.news_headlines(limit=3)
+        if heads:
+            sections += 1
+            parts.append("In the news: " + " ".join(
+                f"{i + 1}. {h}" for i, h in enumerate(heads)) + ".")
+    except Exception:
+        pass
+    if not sections:
+        return ""
+    return _trim_words(" ".join(parts), 150)
+
+
 def _morning_briefing():
+    """The suggestion's action: the composed v7 briefing, falling back
+    to the v3 actions briefing when every live source is unavailable."""
+    text = morning_briefing_text()
+    if text:
+        return text
     import jarvis_actions
     return jarvis_actions.morning_briefing()
 
@@ -317,6 +398,17 @@ def start():
     _started = True
     _thread = threading.Thread(target=_loop, name="jarvis-butler", daemon=True)
     _thread.start()
+
+
+def queue_alert(text, kind="alert"):
+    """
+    v6: push a plain (non-suggestion) alert onto the delivery queue.
+    jarvis_notify uses this so notification announcements ride the exact
+    same between-listen-cycles delivery path as butler alerts - no
+    second queue, no second speaker.
+    """
+    if text:
+        _alert_queue.put({"kind": kind, "text": text})
 
 
 def deliver_pending():

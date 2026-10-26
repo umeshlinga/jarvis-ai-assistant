@@ -20,15 +20,25 @@ DEFAULTS = {
     # Provider order: the first provider with a key available wins.
     "provider_order": ["groq", "openai"],
     # Groq (free tier): https://console.groq.com/keys
+    # v7: the deep tier is headed by the bigger gpt-oss-120b; if the
+    # free account doesn't offer it, the v4.1 dead-model latch skips it
+    # automatically and the proven 20b answers.
     "groq_models": [
+        "openai/gpt-oss-120b",
         "openai/gpt-oss-20b",
         "llama-3.3-70b-versatile",
         "qwen/qwen3.8-27b",
     ],
     "groq_base_url": "https://api.groq.com/openai/v1",
     # OpenAI (paid, optional): key in ~/.openjarvis/openai.key or OPENAI_API_KEY
-    "openai_model": "gpt-4.1-mini",
+    # v7: gpt-4.1 is the deep/agent brain when a key exists, with
+    # gpt-4.1-mini as the automatic fallback model on error.
+    "openai_model": "gpt-4.1",
     "openai_base_url": "https://api.openai.com/v1",
+    # Which provider does DEEP work (advisory answers, summaries, the
+    # agent loop): "auto" = OpenAI first when a key exists, else Groq;
+    # "groq" / "openai" force a side. Fast chat + ears stay on Groq.
+    "deep_provider": "auto",
     "max_history_turns": 30,
     # Speech-to-text: "auto" (Whisper if installed, else Google) |
     # "google" (online, free recognizer) | "whisper" (fully offline).
@@ -97,6 +107,20 @@ DEFAULTS = {
     "hud_auto_open": True,
     # Sandbox folder for code Jarvis writes/runs by voice.
     "code_dir": "~/jarvis-projects",
+    # ---- v6 "Eyes & Hands" ----
+    # Notification + pop-up watcher: reads the macOS Notification
+    # Center database (needs Full Disk Access for Terminal) and watches
+    # for dialog windows, judges what is important, announces it
+    # between listen cycles, and can type replies / click pop-up
+    # buttons on your word. notify_interval_sec is the poll cadence.
+    "notify_enabled": True,
+    "notify_interval_sec": 5,
+    # "Muse mode": the tool-using agent loop for multi-step goals
+    # ("do this task ...", "... and then ..."). agent_max_steps caps
+    # how many tool steps one goal may take before Jarvis stops and
+    # summarises what got done.
+    "agent_enabled": True,
+    "agent_max_steps": 8,
 }
 
 _cache = None

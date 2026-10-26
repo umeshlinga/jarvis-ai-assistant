@@ -822,6 +822,15 @@ def _try_action_impl(q, confirm=None):
                    "any updates", "what's happening", "what is happening"):
         return jarvis_tasks.status_text()
 
+    # v6: "what did I miss" - recap of the important notifications the
+    # watcher caught (jarvis_notify keeps the ring buffer).
+    if q_clean in ("what did i miss", "what have i missed", "did i miss anything",
+                   "anything i missed", "any notifications",
+                   "any new notifications", "any important notifications",
+                   "what notifications", "notifications"):
+        import jarvis_notify
+        return jarvis_notify.what_did_i_miss()
+
     # Live HUD: "show yourself / open the hud"
     if q_clean in ("show yourself", "show me yourself", "open your screen",
                    "open the hud", "open hud", "show the hud", "show me the hud",

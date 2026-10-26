@@ -9,7 +9,7 @@ cd "$(dirname "$0")"
 
 echo ""
 echo "=================================================================="
-echo "          JARVIS v5 - AUTONOMOUS BUTLER SETUP (Mac M1 / Apple Silicon)"
+echo "          JARVIS v6 - EYES & HANDS SETUP (Mac M1 / Apple Silicon)"
 echo "=================================================================="
 echo ""
 
@@ -89,7 +89,12 @@ else
 fi
 
 echo ""
-read -r -p "Optional: enter an OpenAI API key for the backup brain (or press Enter to skip): " OPENAI_KEY_INPUT
+echo "Optional but powerful: an OpenAI key upgrades Jarvis's brain for"
+echo "tasks and agent work - a Muse-class brain plans and chains tools"
+echo "with it, while Groq stays his fast, free ears and everyday chat."
+echo "It also enables the OpenAI human-voice fallback. The key is read"
+echo "at runtime, so pasting it later (no reinstall) works too."
+read -r -p "Optional: enter an OpenAI API key to upgrade the task/agent brain (or press Enter to skip): " OPENAI_KEY_INPUT
 if [ -n "$OPENAI_KEY_INPUT" ]; then
     printf "%s" "$OPENAI_KEY_INPUT" > "$CONFIG_DIR/openai.key"
     chmod 600 "$CONFIG_DIR/openai.key"
@@ -165,7 +170,7 @@ fi
 # 8. Next steps ------------------------------------------------------------------
 echo ""
 echo "=================================================================="
-echo "          JARVIS v5 SETUP COMPLETE"
+echo "          JARVIS v6 SETUP COMPLETE"
 echo "=================================================================="
 echo ""
 echo "Human voice: Jarvis speaks with a neural human voice (Groq Orpheus,"
@@ -177,8 +182,11 @@ echo "  male: daniel, austin, troy - female: hannah, autumn, diana."
 echo ""
 echo "IMPORTANT - macOS permissions (one time):"
 echo "  Microphone:   System Settings > Privacy & Security > Microphone > enable Terminal"
-echo "  Accessibility (for typing/key commands + WhatsApp send):"
+echo "  Accessibility (for typing/key commands + WhatsApp send + pop-up watching):"
 echo "                System Settings > Privacy & Security > Accessibility > enable Terminal"
+echo "  Full Disk Access (so Jarvis can READ your notifications, v6):"
+echo "                System Settings > Privacy & Security > Full Disk Access > enable Terminal"
+echo "                (Without it he still watches pop-ups - see README 'Give Jarvis full access'.)"
 echo "  (If you launch from Jarvis.command, macOS will prompt you the first time.)"
 echo ""
 echo "Start Jarvis (voice):"

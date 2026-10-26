@@ -1,4 +1,4 @@
-# Jarvis AI Assistant — Advanced v5 "Autonomous Butler" (M1)
+# Jarvis AI Assistant — Advanced v6 "Eyes & Hands" (M1)
 
 > Built on the original jarvis-ai-assistant by saipradeep77964 (github.com/saipradeep77964/jarvis-ai-assistant), extended by Umesh Linga.
 
@@ -21,6 +21,43 @@ v5 is built from Umesh's live v4.1 run, in his own words: *"If I say stop it's n
 Plus small GUI verbs: **"scroll up / scroll down"**, **"press enter / tab / escape"**, **"switch to <app>"**, and best-effort **"click <name>"** (System Events searches the front window for a UI element with that name/title — needs Accessibility permission for Terminal, and says so when it can't).
 
 **New config keys (v5):** `speak_actions` — false · `proactive_enabled` — true · `proactive_interval_min` — 30 · `proactive_jobs` — true.
+
+---
+
+## What's new in v6 — "Eyes & Hands"
+
+v6 is built from Umesh's next demand, in his words: *"If I got any pop-up messages, if it is important it should think and tell me — and it should reply also: if I say something reply, it should type and reply… Muse works in its own web browser; Jarvis should be the same inside my Mac — what Muse can do, Jarvis should do on my laptop."* Three additions:
+
+**1. He watches your notifications and pop-ups — and judges them.** A background watcher (config `notify_enabled`, polls every `notify_interval_sec`, default 5s) reads two sources: the **Notification Center database** (every app's notifications — Messages, WhatsApp, Mail, Calendar…) and an **Accessibility dialog watcher** that spots new alert/pop-up windows from any app. Each item is deduped (the same thing never fires twice in a day) and **judged**: rules catch the obvious — verification codes (read aloud, on your explicit ask — it's your machine and your code), messages from your contacts, job/interview/offer and money keywords, calendar/reminder alerts — noise (app promos, news apps, software-update nudges, empty notifications) goes silently to the HUD. Everything in between is decided by the fast brain with a one-word IMPORTANT/IGNORE verdict. Important items are **spoken between listen cycles**, like butler alerts: *"Umesh, message from Mom: … Say 'reply' and I'll type your reply."*
+
+**2. He replies with his hands.** After a message alert, say **"reply"** → he asks *"What should I say to Mom?"* → dictate → he answers the chat: for Messages he tries to send directly into the right conversation; otherwise he **activates the app, opens the chat, and types your reply — without sending**. Check the screen, then say **"send it"** and he presses the send key (Return; Cmd+Shift+D in Mail). Say **"ignore"** and the whole thing is dropped silently. Pop-ups work the same way: he reads you the dialog and its buttons — *"Say a button name and I'll click it"* — and clicks what you name. Missed something, or think he misfiled it? Ask **"what did I miss"** — he recaps the last three important things he caught. That question is the safety net: the judge can misfile, the recap can't hide.
+
+**One-time setup for full power:** Notification-Center reading needs **Full Disk Access for Terminal** — System Settings → Privacy & Security → Full Disk Access → add/enable Terminal. Without it the watcher runs pop-ups-only and the startup banner says so honestly (`Eyes : pop-ups watched; Notification Center needs Full Disk Access…`). The full checklist for every permission lives under **"Give Jarvis full access"** below.
+
+**New config keys (v6):** `notify_enabled` — true · `notify_interval_sec` — 5.
+
+### Muse mode — he plans and chains tools himself (v6)
+
+Say **"do this task: …"** (also "jarvis task …", "work on this …", "agent …"), or just give a multi-step order — *"… and then …"* — that no single command covers, and Jarvis switches from routing to **agent mode**: the brain plans silently and chains real tools on your Mac — open apps and URLs, web and job search, read websites and files, write and run code (runs still ask your yes), send iMessages (still confirm-gated), type, press keys, click elements, set reminders, screenshots — checking each tool's result before the next step, up to `agent_max_steps` steps (default 8, config `agent_enabled` / `agent_max_steps`) or about two minutes, then a short spoken report of what actually got done. Every step appears live on the **HUD** as it happens, Muse-style. Add **"in the background"** to any goal and it runs as a background task that announces itself when done. **Honest limit:** his brain is smaller than Muse — very long or tricky tasks may need splitting into two or three goals, and Leo in chat remains the heavy operator for the really big jobs.
+
+### A bigger brain when you want it (v7 routing)
+
+Jarvis now splits his thinking by job, automatically: **fast chat and his ears stay on Groq** (free, quick), while **deep work — advice, summaries, the judge, and agent mode — runs on OpenAI first when an OpenAI key exists** (config `deep_provider`: "auto" / "groq" / "openai"). The default OpenAI deep model is **gpt-4.1**, with gpt-4.1-mini as the automatic fallback if the big model errors; Groq's deep tier is now headed by the bigger **gpt-oss-120b** (the dead-model latch skips it silently if the free account doesn't offer it). Paste an OpenAI key during install — or later, just drop it at `~/.openjarvis/openai.key` — and the upgrade applies on the next start, no reinstall. The startup banner states the split plainly ("Brain: Groq fast chat + OpenAI deep/agent (gpt-4.1)"). With no OpenAI key, everything stays on Groq exactly as before. **News + stocks joined the morning briefing:** the butler's briefing now composes your reminders and calendar with a market snapshot and the **top 3 news headlines** — any source that fails is simply left out, never invented (and there is still no weather section: he has no weather source).
+
+---
+
+## Give Jarvis full access (one-time, ~5 minutes)
+
+Jarvis can only touch what macOS lets Terminal touch. These grants — all in **System Settings → Privacy & Security** — are the maximum access any Mac assistant can hold:
+
+1. **Microphone** → enable **Terminal** (done at install — his ears).
+2. **Accessibility** → enable **Terminal** (typing, key presses, clicking, pop-up watching, WhatsApp send).
+3. **Full Disk Access** → enable **Terminal** (unlocks reading the Notification Center database — the v6 notification watcher; without it he's pop-ups-only).
+4. **Automation** → the first time Jarvis drives Messages / Mail / Calendar / Reminders / System Events, macOS pops an "Allow Terminal to control …?" prompt — click **Allow** (each app asks once; these live under Privacy & Security → Automation).
+5. **Screen Recording** → enable **Terminal** — only needed if you want screenshot / screen-reading features to see the whole screen.
+6. **Notifications** → System Settings → **Notifications** → turn notifications ON for **Messages, WhatsApp, and Mail** (an app that never shows a notification can never be watched).
+
+One honest paragraph: Apple never gives any app silent root access to *everything* — these grants are the ceiling for any assistant on a Mac, and some things will always need you personally: installing software, changing security settings, and other users' files. Your keys live only on your Mac, in `~/.openjarvis/` with `chmod 600`, and Jarvis sends them nowhere except the brain provider you chose (Groq and/or OpenAI).
 
 ---
 
@@ -301,6 +338,8 @@ Text mode is also the automatic fallback whenever no microphone is available.
 - `stt_engine` — "auto" / "groq" / "google" / "whisper" · `whisper_model` — "base.en" · `suggestions` — true
 - **v4 keys:** `groq_stt_model` — "whisper-large-v3" (v4.1; was the turbo variant) · `stt_vocab_prompt` — words Whisper should expect (your name, your field, your apps) · `fast_model` — "openai/gpt-oss-20b" (chat tier; `groq_models` is the deep tier; a saved "llama-3.1-8b-instant" auto-migrates to this) · `personal_context` — short bio the brain uses to talk about your situation · `hud_port` — 8765 · `hud_auto_open` — true · `code_dir` — "~/jarvis-projects"
 - **v4.1 voice keys:** `tts_engine` — "auto" / "groq" / "openai" / "say" · `groq_tts_model` — "canopylabs/orpheus-v1-english" · `tts_voice` — "daniel" (male: daniel/austin/troy; female: hannah/autumn/diana) · `openai_tts_model` — "gpt-4o-mini-tts" · `openai_tts_voice` — "nova"
+- **v6 keys:** `notify_enabled` — true · `notify_interval_sec` — 5 · `agent_enabled` — true · `agent_max_steps` — 8
+- **v7 keys:** `deep_provider` — "auto" (OpenAI-first for deep/agent work when a key exists) · `openai_model` — "gpt-4.1" (gpt-4.1-mini is the automatic fallback)
 
 Files Jarvis keeps in `~/.openjarvis/`: `config.json`, `contacts.json`, `free.key` (Groq), `openai.key` (optional), `history.json`, `notes.txt`, and optionally `mail_cache.txt` (see below).
 
@@ -332,6 +371,11 @@ Files Jarvis keeps in `~/.openjarvis/`: `config.json`, `contacts.json`, `free.ke
 - **The butler (v5) only sees what's on this Mac**: Apple Reminders, Apple Calendar, and the battery — plus one morning web count for the job suggestion. He can't see Google Calendar, your phone, or your email, and alerts wait for a gap between listen cycles, so one can land a few seconds after it triggers. Nothing is ever repeated the same day.
 - **"Click <name>" (v5) is best-effort** and needs Accessibility permission for Terminal (System Settings → Privacy & Security → Accessibility). It clicks the first visible UI element whose name or title matches in the front app's front window; hidden menus and canvas-drawn apps (games, some Electron screens) may not expose elements at all — then he says he couldn't, and clicks nothing.
 - **Reading PDFs aloud (v5) needs poppler** (`brew install poppler` provides `pdftotext`). Without it Jarvis opens PDFs but won't pretend to read them. Scanned-image PDFs have no text layer even with poppler — he'll report no readable text rather than inventing content.
+- **Notification watching (v6) depends on Apple's database, which Apple never documented.** The Notification Center schema differs between macOS versions; Jarvis discovers the tables/columns at runtime and parses payloads defensively, but on some versions it may yield nothing — the banner's `Eyes:` line and `notify_status()` say what the watcher can actually see, and the pop-up watcher keeps working regardless. Reading the database needs **Full Disk Access** for Terminal (see "Give Jarvis full access"); without it, that source is simply off — never an error loop.
+- **WhatsApp Web in a browser tab is only visible if the browser shows macOS notifications** — a muted tab or a browser with notifications off produces nothing for any watcher to see. The WhatsApp desktop app's notifications are watched normally.
+- **The importance judge can misfile.** Rules catch codes, contacts, job/money keywords and calendar alerts deterministically; borderline items go to the fast brain with a one-word verdict, and brains misjudge. Silent items still land on the HUD, and **"what did I miss"** recaps the important ones — between the two, a misfile is recoverable, not invisible.
+- **Verification codes are read aloud on your explicit instruction, on your own machine.** If anyone else is in the room, they will hear the code too — that's inherent to a voice assistant reading your notifications, and it's why the watcher only runs when you start Jarvis.
+- **Agent mode (v6) is a smaller brain than Muse.** It plans and chains up to `agent_max_steps` tool calls (default 8) with a ~2-minute cap, then reports honestly what got done. Some models reject tool-calling entirely — the agent then steps aside (latched for the session) and normal chat/routing continues. Splitting a big goal into two smaller ones works markedly better than one giant goal.
 
 ## Tests
 
@@ -344,5 +388,7 @@ python3 tests/test_web.py         # v4 web search/read + v4.1 job search & topic
 python3 tests/test_code.py        # v4 voice coding in a temp sandbox (LLM stubbed)
 python3 tests/test_tasks.py       # v4 background-task manager + announcer
 python3 tests/test_read.py        # v5 read-anything: txt/docx extraction, pdf honesty, read-more paging, routes (stubbed search/brain)
-python3 tests/test_butler.py      # v5 proactive butler: alerts once/day, suggestion yes/no/expiry (injected providers + clock)
+python3 tests/test_butler.py      # v5 proactive butler: alerts once/day, suggestion yes/no/expiry (injected providers + clock) + v7 composed briefing (news + markets, graceful omissions)
+python3 tests/test_notify.py      # v6 eyes & hands: real temp Notification-Center DB + plist fixtures, judge rules/brain parse, reply->type->send flow, pop-up buttons, "what did I miss" (all runners stubbed)
+python3 tests/test_agent.py       # v6 Muse mode: scripted tool-calling client (chains, confirm-declined send, tools-rejection degrade, step cutoff, trigger table) + v7 brain split (OpenAI deep/agent, gpt-4.1 -> mini fallback)
 ```

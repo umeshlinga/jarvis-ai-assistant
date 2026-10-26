@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-jarvis.py - Jarvis v5 (Autonomous Butler, M1) main entry point.
+jarvis.py - Jarvis v6 (Eyes & Hands, M1) main entry point.
 
 Usage:
     python jarvis.py                      Voice loop (default; text fallback if no mic)
@@ -19,6 +19,7 @@ import sys
 import jarvis_brain
 import jarvis_config
 import jarvis_hud
+import jarvis_notify
 import jarvis_voice
 
 
@@ -34,25 +35,32 @@ def _confirm_prompt(prompt):
 def _banner():
     cfg = jarvis_config.load_config()
     provider = jarvis_brain.active_provider()
-    if provider == "groq":
+    deep = jarvis_brain.deep_providers_available()
+    # v7 brain split, stated honestly: with an OpenAI key, deep/agent
+    # work runs on OpenAI while Groq stays the fast free chat + ears.
+    if deep and deep[0] == "openai" and jarvis_brain.groq_key():
+        brain_line = (f"Groq fast chat + OpenAI deep/agent "
+                      f"({cfg.get('openai_model', 'gpt-4.1')})")
+    elif provider == "groq":
         brain_line = "Groq (cloud) - models: " + ", ".join(jarvis_brain._models_for("groq"))
     elif provider == "openai":
         brain_line = "OpenAI (cloud) - model: " + ", ".join(jarvis_brain._models_for("openai"))
     else:
         brain_line = "Local-only (no Groq/OpenAI key found - local actions still work)"
     print("=" * 54)
-    print("  JARVIS v5 - Autonomous Butler (Mac M1)")
+    print("  JARVIS v6 - Eyes & Hands (Mac M1)")
     print(f"  Owner : {cfg.get('owner_name', 'Umesh')}")
     print(f"  Brain : {brain_line}")
     print(f"  Mic   : {jarvis_voice.mic_status()}")
     print(f"  Ears  : speech-to-text = {jarvis_voice.stt_status()}")
     print(f"  Voice : {jarvis_voice.tts_status()}")
+    print(f"  Eyes  : {jarvis_notify.notify_status()} (say 'what did I miss')")
     print(f"  HUD   : live screen at {jarvis_hud.hud_url()} (say 'show yourself')")
     print("=" * 54)
 
 
 def main(argv=None):
-    parser = argparse.ArgumentParser(description="Jarvis v5 - Autonomous Butler AI assistant for Mac M1")
+    parser = argparse.ArgumentParser(description="Jarvis v6 - Eyes & Hands AI assistant for Mac M1")
     parser.add_argument("--text", action="store_true", help="Text console loop instead of voice")
     parser.add_argument("--once", metavar="COMMAND", help="Run a single command and exit")
     parser.add_argument("--no-speak", action="store_true", help="Print replies, do not speak them")
