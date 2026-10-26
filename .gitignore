@@ -1,0 +1,5 @@
+.venv/
+__pycache__/
+*.pyc
+.openjarvis/
+.DS_Store

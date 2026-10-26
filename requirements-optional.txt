@@ -1,0 +1,6 @@
+# Optional extras - NOT required for Jarvis v2 to run.
+# PyAudio is only for old SpeechRecognition Microphone() code paths;
+# v2 records with sounddevice instead, which is why PyAudio is optional.
+# On Apple Silicon, PyAudio needs portaudio first:  brew install portaudio
+PyAudio>=0.2.14
+pyttsx3>=2.90
