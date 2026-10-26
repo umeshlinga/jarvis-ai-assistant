@@ -104,7 +104,14 @@ DEFAULTS = {
     ),
     # Live visual HUD (local web page showing what Jarvis is doing).
     "hud_port": 8765,
-    "hud_auto_open": True,
+    # v7 "One Icon": the HUD browser page NO LONGER auto-opens at startup
+    # (in v4-v6 Safari burst open on every launch, which annoyed him -
+    # the native Jarvis window (jarvis_window) is the face now). This
+    # RENAMED key defaults to False; the old "hud_auto_open" key is
+    # ignored entirely, so a v4-era saved config with it set true can
+    # never re-enable the browser pop-open. The HUD still opens when he
+    # explicitly says "show yourself".
+    "hud_auto_open_browser": False,
     # Sandbox folder for code Jarvis writes/runs by voice.
     "code_dir": "~/jarvis-projects",
     # ---- v6 "Eyes & Hands" ----

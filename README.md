@@ -1,8 +1,26 @@
-# Jarvis AI Assistant — Advanced v6 "Eyes & Hands" (M1)
+# Jarvis AI Assistant — Advanced v7 "One Icon" (M1)
 
 > Built on the original jarvis-ai-assistant by saipradeep77964 (github.com/saipradeep77964/jarvis-ai-assistant), extended by Umesh Linga.
 
 A voice-controlled AI assistant for **MacBook M1 / Apple Silicon (arm64)**, rebuilt and extended from the original project above. The original is **not** Umesh's invention — this version keeps its brain / actions / market design and adds the fixes and features below.
+
+---
+
+## What's new in v7 — "One Icon"
+
+v7 is built from Umesh's v6 run — a screenshot that showed two hidden failures (his Groq key was sitting in the OpenAI slot, silently breaking every deep/agent call and the human voice) — and one clear demand in his words: *"I don't want to use the terminal… any pop up should come out and speak like a man."*
+
+**Your new daily life: double-click Jarvis on the Desktop.** The installer now builds a real **Jarvis.app** (in `~/Applications`, with a Desktop shortcut): double-click it and Jarvis appears as **his own small floating window** — a state light (Listening / Thinking / Speaking / Working / Alert), what he heard, what he said, and three buttons: **Stop** (cuts his voice mid-sentence), **What did I miss**, **Quit**. **No Terminal. No browser popping open** — the HUD browser page no longer auto-opens at startup (config `hud_auto_open_browser`, default false; the old `hud_auto_open` key is ignored); it opens only when you say **"show yourself"**. Butler and notification announcements **raise the window and flash Alert** at the same moment they are spoken. Terminal remains only as Leo's repair hatch — the app's output is logged to `~/.openjarvis/jarvis-app.log`, and if Jarvis ever stops right after starting, the app shows a dialog pointing at that log.
+
+**Self-healing keys.** A key in the wrong slot is now ignored instead of used: Groq keys must start `gsk_`, OpenAI keys `sk-`. If the OpenAI slot holds a Groq key (the v6 mix-up), Jarvis treats it as absent, stays Groq-only exactly as chosen, and says so once in the startup banner — *"Note: the OpenAI slot held a Groq key - ignored it; Jarvis is Groq-only, as you chose."* The installer also rejects a wrong-shaped key at paste time ("That looks like a Groq key, not OpenAI - skipped."), for both slots.
+
+**A voice that explains itself.** When the human voice can't run, each neural rung now logs one short line saying why — `[Voice: Groq Orpheus failed (…) - trying next]`, `[Voice: no usable OpenAI key - skipped]`, then `[Voice: using Mac voice for this session]` — with API keys always scrubbed out of error text. In v6 the only visible error was the *last* rung's 401, which hid the real Orpheus failure; that can't happen silently anymore.
+
+**`./jarvis --doctor`.** One command (from Terminal, when Leo asks for a health screenshot) prints plain **PASS / FAIL / NOTE** lines: Python, microphone, both key slots (masked), the brain routes after validation, the ears, a per-rung **voice probe** (it silently synthesises a tiny sample to prove each voice actually works), Notification Center readability, Accessibility, the HUD port, and internet reachability — then exits. No listening, no surprises.
+
+**Permissions follow the app that runs him.** Grants belong to the *identity* that launches Jarvis. Terminal's grants cover Terminal launches; **if macOS prompts for "Jarvis" (the app) — Microphone, Accessibility, Full Disk Access, Automation — allow it the same way**; you may need "Jarvis" added next to Terminal in those Privacy & Security lists once. The full checklist is under **"Give Jarvis full access"** below.
+
+**New config keys (v7):** `hud_auto_open_browser` — false (replaces `hud_auto_open`, which is now ignored).
 
 ---
 
@@ -59,6 +77,8 @@ Jarvis can only touch what macOS lets Terminal touch. These grants — all in **
 
 One honest paragraph: Apple never gives any app silent root access to *everything* — these grants are the ceiling for any assistant on a Mac, and some things will always need you personally: installing software, changing security settings, and other users' files. Your keys live only on your Mac, in `~/.openjarvis/` with `chmod 600`, and Jarvis sends them nowhere except the brain provider you chose (Groq and/or OpenAI).
 
+**v7 note — the app has its own identity.** The list above names **Terminal** because that's what ran Jarvis up to v6. Since v7 you normally launch **Jarvis.app**, and macOS keeps permissions *per app*: if prompts appear for **"Jarvis"** — or a permission seems granted for Terminal but Jarvis.app still can't do something — add/enable **Jarvis** in the same lists (Microphone, Accessibility, Full Disk Access, Automation) and allow its prompts the same way. `./jarvis --doctor` reports what the *current* launch can actually see.
+
 ---
 
 ## What's new in v4.1 — "Do the work" + human voice
@@ -94,7 +114,7 @@ v4 is a speed + awareness upgrade on top of v3. Everything from v3 still works; 
 
 **B. Two-speed brain + a companion who knows you.** Everyday chat runs on a fast model; deep / advisory questions ("what do you think…", advice, analysis) use the big models. *(v4.1: the fast model is `openai/gpt-oss-20b` — Groq dropped `llama-3.1-8b-instant` from this account, and dead models are now latched off instead of retried per message.)* Spoken answers are **two to four natural sentences** by default — say "explain in detail" or "tell me more" when you want the long version (that kills the old "plain text" feel). The system prompt carries a short personal context (config `personal_context` — who you are, your field, your job search) so answers talk about *your* situation instead of generic advice. Edit it in `~/.openjarvis/config.json`; it lives on your Mac and only travels inside your own Groq/OpenAI requests.
 
-**C. Live visual HUD.** Jarvis now has a face you can watch: a localhost-only page (`http://127.0.0.1:8765`, config `hud_port`) showing his current state (listening / thinking / speaking / working), the live transcript ("You said" / "Jarvis"), and an activity + background-task feed. It opens automatically on startup (config `hud_auto_open`), or say **"show yourself" / "open the hud"** any time. No internet needed — Jarvis serves it himself, bound to 127.0.0.1 only.
+**C. Live visual HUD.** Jarvis now has a face you can watch: a localhost-only page (`http://127.0.0.1:8765`, config `hud_port`) showing his current state (listening / thinking / speaking / working), the live transcript ("You said" / "Jarvis"), and an activity + background-task feed. Say **"show yourself" / "open the hud"** any time to open it. (v4–v6 opened it automatically on startup; since v7 the native window is his face instead, and the browser page opens only on request — or set config `hud_auto_open_browser` true to bring the old behaviour back.) No internet needed — Jarvis serves it himself, bound to 127.0.0.1 only.
 
 **D. Browser brain.** Say **"search for electric cars and tell me"** (or "read about …") and Jarvis fetches DuckDuckGo results and reads you the top 3; say **"open the first result"** to open the top hit. Say **"read bbc dot com"** or **"read this website …"** and he fetches the page and summarises it in 4–5 spoken sentences (if the brain is offline he reads the first sentences raw and tells you so). Say **"open browser"** to open your default browser.
 
@@ -336,7 +356,7 @@ Text mode is also the automatic fallback whenever no microphone is available.
 - `openai_model` — "gpt-4.1-mini" · `openai_base_url` — "https://api.openai.com/v1"
 - `max_history_turns` — 30
 - `stt_engine` — "auto" / "groq" / "google" / "whisper" · `whisper_model` — "base.en" · `suggestions` — true
-- **v4 keys:** `groq_stt_model` — "whisper-large-v3" (v4.1; was the turbo variant) · `stt_vocab_prompt` — words Whisper should expect (your name, your field, your apps) · `fast_model` — "openai/gpt-oss-20b" (chat tier; `groq_models` is the deep tier; a saved "llama-3.1-8b-instant" auto-migrates to this) · `personal_context` — short bio the brain uses to talk about your situation · `hud_port` — 8765 · `hud_auto_open` — true · `code_dir` — "~/jarvis-projects"
+- **v4 keys:** `groq_stt_model` — "whisper-large-v3" (v4.1; was the turbo variant) · `stt_vocab_prompt` — words Whisper should expect (your name, your field, your apps) · `fast_model` — "openai/gpt-oss-20b" (chat tier; `groq_models` is the deep tier; a saved "llama-3.1-8b-instant" auto-migrates to this) · `personal_context` — short bio the brain uses to talk about your situation · `hud_port` — 8765 · `hud_auto_open_browser` — false (v7; the old `hud_auto_open` key is ignored) · `code_dir` — "~/jarvis-projects"
 - **v4.1 voice keys:** `tts_engine` — "auto" / "groq" / "openai" / "say" · `groq_tts_model` — "canopylabs/orpheus-v1-english" · `tts_voice` — "daniel" (male: daniel/austin/troy; female: hannah/autumn/diana) · `openai_tts_model` — "gpt-4o-mini-tts" · `openai_tts_voice` — "nova"
 - **v6 keys:** `notify_enabled` — true · `notify_interval_sec` — 5 · `agent_enabled` — true · `agent_max_steps` — 8
 - **v7 keys:** `deep_provider` — "auto" (OpenAI-first for deep/agent work when a key exists) · `openai_model` — "gpt-4.1" (gpt-4.1-mini is the automatic fallback)
@@ -391,4 +411,5 @@ python3 tests/test_read.py        # v5 read-anything: txt/docx extraction, pdf h
 python3 tests/test_butler.py      # v5 proactive butler: alerts once/day, suggestion yes/no/expiry (injected providers + clock) + v7 composed briefing (news + markets, graceful omissions)
 python3 tests/test_notify.py      # v6 eyes & hands: real temp Notification-Center DB + plist fixtures, judge rules/brain parse, reply->type->send flow, pop-up buttons, "what did I miss" (all runners stubbed)
 python3 tests/test_agent.py       # v6 Muse mode: scripted tool-calling client (chains, confirm-declined send, tools-rejection degrade, step cutoff, trigger table) + v7 brain split (OpenAI deep/agent, gpt-4.1 -> mini fallback)
+python3 tests/test_v7.py          # v7 One Icon: key-shape guards + poisoned-slot self-heal, error scrubber, per-rung voice diagnostics + probe, hud_auto_open_browser rename, window state model, --doctor smoke, installer statics
 ```

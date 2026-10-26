@@ -150,12 +150,113 @@ def _read_key(env_name, *filenames):
     return None
 
 
+# ---------------------------------------------------------------------------
+# v7 key guards: a key in the WRONG slot is worse than no key at all.
+# ---------------------------------------------------------------------------
+# Live evidence (his v6 run): ~/.openjarvis/openai.key held his GROQ key
+# (gsk_...) - a clipboard mix-up at an installer step. Every OpenAI-routed
+# call (deep tier, agent, the OpenAI TTS rung) then died with a 401 from
+# api.openai.com, and the banner proudly announced a brain split that
+# could never work. He chose Groq-only, so v7 validates key SHAPES at
+# read time: a value that fails its provider's prefix check is treated
+# as absent, and a plain-language note is recorded (once per process)
+# for the banner / --doctor. Self-healing: no crash, no 401 spam.
+
+_KEY_SOURCES = {
+    "groq": ("GROQ_API_KEY", ("free.key", "groq.key")),
+    "openai": ("OPENAI_API_KEY", ("openai.key",)),
+}
+_key_notes = []
+_key_notes_seen = set()
+
+
+def valid_key_prefix(provider, value):
+    """Groq keys start 'gsk_'; OpenAI keys start 'sk-' (sk-proj-, ...)."""
+    if not value:
+        return False
+    value = str(value).strip()
+    if provider == "groq":
+        return value.startswith("gsk_")
+    if provider == "openai":
+        return value.startswith("sk-")
+    return True
+
+
+def _looks_like_provider(value):
+    """Which provider a key value LOOKS like, from its prefix alone."""
+    v = str(value or "").strip()
+    if v.startswith("gsk_"):
+        return "groq"
+    if v.startswith("sk-"):
+        return "openai"
+    return None
+
+
+def _record_key_note(line):
+    if line not in _key_notes_seen:
+        _key_notes_seen.add(line)
+        _key_notes.append(line)
+
+
+def _checked_key(provider):
+    """The provider's key, validated by shape. Wrong-slot -> None + note."""
+    env_name, filenames = _KEY_SOURCES[provider]
+    raw = _read_key(env_name, *filenames)
+    if not raw:
+        return None
+    if valid_key_prefix(provider, raw):
+        return raw
+    slot = "Groq" if provider == "groq" else "OpenAI"
+    looks = _looks_like_provider(raw)
+    if looks is not None and looks != provider:
+        other = "Groq" if looks == "groq" else "OpenAI"
+        if provider == "openai":
+            _record_key_note(
+                "Note: the OpenAI slot held a Groq key - ignored it; "
+                "Jarvis is Groq-only, as you chose.")
+        else:
+            _record_key_note(
+                f"Note: the {slot} slot held an {other} key - ignored it.")
+    else:
+        _record_key_note(
+            f"Note: the {slot} slot held a key I don't recognise - ignored it.")
+    return None
+
+
+def key_notes():
+    """
+    Plain-language notes about ignored keys, for the banner / doctor.
+    Reading both keys first is what populates the notes. Each distinct
+    note is recorded at most once per process.
+    """
+    groq_key()
+    openai_key()
+    return list(_key_notes)
+
+
+def key_slot_state(provider):
+    """
+    'absent' | 'ok' | 'wrong-key' | 'unrecognised' for a provider's key
+    slot - for --doctor and the voice probe. Never returns the key.
+    """
+    env_name, filenames = _KEY_SOURCES[provider]
+    raw = _read_key(env_name, *filenames)
+    if not raw:
+        return "absent"
+    if valid_key_prefix(provider, raw):
+        return "ok"
+    looks = _looks_like_provider(raw)
+    if looks is not None and looks != provider:
+        return "wrong-key"
+    return "unrecognised"
+
+
 def groq_key():
-    return _read_key("GROQ_API_KEY", "free.key", "groq.key")
+    return _checked_key("groq")
 
 
 def openai_key():
-    return _read_key("OPENAI_API_KEY", "openai.key")
+    return _checked_key("openai")
 
 
 def providers_available():

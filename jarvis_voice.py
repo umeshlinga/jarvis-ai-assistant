@@ -43,6 +43,7 @@ import jarvis_config
 import jarvis_hud
 import jarvis_notify
 import jarvis_tasks
+import jarvis_window
 
 SAMPLE_RATE = 16000
 CHANNELS = 1
@@ -61,6 +62,24 @@ _groq_stt_broken_until = 0.0
 # fails once, Jarvis says so once and uses the Mac voice for the rest
 # of the session. No retry spam, and a reply is never blocked by TTS.
 _tts_neural_broken = False
+# v7: which neural rungs have already had their one diagnostic line
+# printed this session, and whether the final "Mac voice" line went out.
+_tts_rungs_logged = set()
+_tts_final_logged = False
+
+# Anything shaped like an API key (Groq gsk_..., OpenAI sk-..., including
+# the partially-masked forms providers echo back, e.g. gsk_r2Nj****E9Hb)
+# must never reach the terminal or a log via an error message.
+_KEY_LIKE_RE = re.compile(r"(gsk_|sk-)[A-Za-z0-9_\-*]{3,}")
+
+
+def _scrub_error(text, limit=90):
+    """Shorten a provider error for display, with key material removed."""
+    s = _KEY_LIKE_RE.sub(lambda m: m.group(1) + "…", str(text or ""))
+    s = re.sub(r"\s+", " ", s).strip()
+    if len(s) > limit:
+        s = s[:limit].rstrip() + "…"
+    return s
 
 # ---------------------------------------------------------------------------
 # v5: killable playback + barge-in ("Jarvis, stop")
@@ -115,6 +134,17 @@ def _hud_emit(kind, text):
     """Feed the live HUD (no-op cost when the server isn't running)."""
     try:
         jarvis_hud.emit(kind, text)
+    except Exception:
+        pass
+    # v7: the native window mirrors state / heard / spoken from the
+    # same events, so it needs no wiring of its own elsewhere.
+    try:
+        if kind == "state":
+            jarvis_window.set_state(state=text)
+        elif kind == "heard":
+            jarvis_window.set_state(heard=text)
+        elif kind == "reply":
+            jarvis_window.set_state(spoken=text)
     except Exception:
         pass
 
@@ -316,16 +346,16 @@ def _openai_key():
         return None
 
 
-def _tts_client(provider):
+def _tts_client(provider, timeout=30.0):
     """OpenAI-SDK client pointed at the provider's speech endpoint."""
     from openai import OpenAI  # lazy, like everywhere else
 
     cfg = jarvis_config.load_config()
     if provider == "groq":
         return OpenAI(api_key=_groq_key(), base_url=cfg.get("groq_base_url"),
-                      timeout=30.0)
+                      timeout=timeout)
     return OpenAI(api_key=_openai_key(), base_url=cfg.get("openai_base_url"),
-                  timeout=30.0)
+                  timeout=timeout)
 
 
 def _synth_chunk(client, model, voice_name, text):
@@ -383,21 +413,34 @@ def _tts_attempts():
     return attempts
 
 
+def _tts_rung_label(provider, model):
+    if provider == "groq":
+        return "Groq Orpheus"
+    return "OpenAI voice"
+
+
 def _speak_neural(text):
     """
     Try to speak `text` with a neural (human) voice. Returns True when
     the whole reply was spoken neurally. Any failure falls down the
     chain; when every configured engine fails, the neural voice latches
-    OFF for the session (one printed line) and the caller uses `say`.
+    OFF for the session and the caller uses `say`.
+
+    v7 diagnostics: in v6 the human voice silently fell back to the Mac
+    voice and the ONLY error printed was the last rung's (an OpenAI 401
+    from a Groq key sitting in the OpenAI slot) - the actual Groq
+    Orpheus failure was invisible. Now each rung logs ONE short line at
+    its first failure, key material scrubbed, then one final line.
     """
-    global _tts_neural_broken
+    global _tts_neural_broken, _tts_final_logged
     if _tts_neural_broken:
         return False
     attempts = _tts_attempts()
     if not attempts:
         return False
-    last_error = None
+    attempted = set()
     for provider, model, voice_name, limit in attempts:
+        attempted.add(provider)
         tmp_path = None
         try:
             client = _tts_client(provider)
@@ -418,18 +461,30 @@ def _speak_neural(text):
                     tmp_path = None
                 if _stop_event.is_set():
                     return True  # stopped mid-reply: handled, not a failure
+            _tts_rungs_logged.discard(provider)  # recovered - log again if it breaks anew
             return True
         except Exception as e:
-            last_error = e
             if tmp_path:
                 try:
                     os.remove(tmp_path)
                 except Exception:
                     pass
+            if provider not in _tts_rungs_logged:
+                _tts_rungs_logged.add(provider)
+                print(f"[Voice: {_tts_rung_label(provider, model)} failed "
+                      f"({_scrub_error(e)}) - trying next]")
             continue  # fall down the chain to the next engine
     _tts_neural_broken = True
-    print(f"[Human voice not available right now ({last_error}) - using the "
-          f"Mac voice for the rest of this session.]")
+    if not _tts_final_logged:
+        _tts_final_logged = True
+        try:
+            engine = str(jarvis_config.load_config().get(
+                "tts_engine", "auto")).lower()
+        except Exception:
+            engine = "auto"
+        if engine in ("auto", "openai") and "openai" not in attempted:
+            print("[Voice: no usable OpenAI key - skipped]")
+        print("[Voice: using Mac voice for this session]")
     return False
 
 
@@ -481,6 +536,69 @@ def tts_status():
         return (f"neural (openai {cfg.get('openai_tts_model', 'gpt-4o-mini-tts')}, "
                 f"voice {cfg.get('openai_tts_voice', 'nova')}) with macOS say fallback")
     return say_desc + " - no neural voice key configured"
+
+
+def voice_probe():
+    """
+    v7: per-rung voice status for --doctor, WITHOUT speaking: for each
+    configured neural rung, attempt one minimal synthesis to a temp
+    file (SDK-timeout bounded) and report the outcome. Returns a list of
+    (level, text) with level PASS / FAIL / NOTE. Never latches the
+    neural voice, never prints rung spam, never returns key material.
+    """
+    results = []
+    try:
+        cfg = jarvis_config.load_config()
+    except Exception:
+        cfg = {}
+    engine = str(cfg.get("tts_engine", "auto")).lower()
+    if engine == "say":
+        results.append(("NOTE", "neural voice disabled (tts_engine = say)"))
+    else:
+        try:
+            import jarvis_brain
+            states = {p: jarvis_brain.key_slot_state(p) for p in ("groq", "openai")}
+        except Exception:
+            states = {}
+        rungs = []
+        if engine in ("auto", "groq"):
+            rungs.append(("groq",
+                          str(cfg.get("groq_tts_model", "canopylabs/orpheus-v1-english")),
+                          str(cfg.get("tts_voice", "daniel")), "Groq Orpheus"))
+        if engine in ("auto", "openai"):
+            rungs.append(("openai",
+                          str(cfg.get("openai_tts_model", "gpt-4o-mini-tts")),
+                          str(cfg.get("openai_tts_voice", "nova")), "OpenAI voice"))
+        for provider, model, voice_name, label in rungs:
+            desc = f"{label} ({model}, voice {voice_name})"
+            state = states.get(provider, "absent")
+            if state == "wrong-key":
+                results.append(("FAIL", f"{desc}: key invalid - the "
+                                        f"{provider} slot holds another "
+                                        f"provider's key (ignored)"))
+                continue
+            if state == "unrecognised":
+                results.append(("FAIL", f"{desc}: key invalid - not a "
+                                        f"recognisable {provider} key (ignored)"))
+                continue
+            if state != "ok":
+                results.append(("NOTE", f"{desc}: not configured "
+                                        f"(no {provider} key)"))
+                continue
+            try:
+                client = _tts_client(provider, timeout=10.0)
+                data = _synth_chunk(client, model, voice_name, "Hello.")
+                if data:
+                    results.append(("PASS", f"{desc}: ok"))
+                else:
+                    results.append(("FAIL", f"{desc}: failed: empty audio"))
+            except Exception as e:
+                results.append(("FAIL", f"{desc}: failed: {_scrub_error(e)}"))
+    if sys.platform == "darwin":
+        results.append(("PASS", "macOS say: available (fallback voice)"))
+    else:
+        results.append(("NOTE", "macOS say: not on this platform"))
+    return results
 
 
 def _speak_audio(text):
@@ -954,11 +1072,46 @@ def _strip_wake_word(text):
 
 def _start_butler(no_speak=False):
     """Start the v5 proactive butler for this loop (guarded, idempotent)."""
+    def _announce(msg):
+        # v7: announcements also raise the native window + flash Alert,
+        # at the same delivery point where they are spoken (the butler
+        # queue carries jarvis_notify's announcements too).
+        try:
+            jarvis_window.show_alert(msg)
+        except Exception:
+            pass
+        present_reply(msg, no_speak=no_speak, source="task")
     try:
-        jarvis_butler.set_speaker(lambda msg: present_reply(msg, no_speak=no_speak, source="task"))
+        jarvis_butler.set_speaker(_announce)
         jarvis_butler.start()
     except Exception:
         pass
+
+
+def _window_quit_requested():
+    try:
+        return jarvis_window.quit_requested()
+    except Exception:
+        return False
+
+
+def _process_window_commands(no_speak=False):
+    """v7: commands injected by the window's buttons ('What did I miss')."""
+    try:
+        cmds = jarvis_window.poll_commands()
+    except Exception:
+        return
+    for text in cmds:
+        try:
+            _hud_emit("heard", text)
+            _hud_emit("state", "thinking")
+            import jarvis_brain
+            reply = jarvis_brain.think(text, confirm=_confirm_prompt)
+            present_reply(reply, no_speak=no_speak,
+                          source=jarvis_brain.last_reply_source())
+            _hud_emit("state", "idle")
+        except Exception:
+            pass
 
 
 def _deliver_butler():
@@ -1036,6 +1189,10 @@ def text_loop(no_speak=False):
     _hud_emit("state", "idle")
     while True:
         _deliver_butler()
+        _process_window_commands(no_speak=no_speak)
+        if _window_quit_requested():
+            print("\nShutting down Jarvis. Goodbye!")
+            break
         try:
             user_input = input("You: ").strip()
         except (KeyboardInterrupt, EOFError):
@@ -1062,10 +1219,15 @@ def text_loop(no_speak=False):
 
 
 def _maybe_open_hud():
-    """Auto-open the live HUD once, when it is running and configured."""
+    """
+    Auto-open the live HUD browser page - ONLY when the v7 config key
+    hud_auto_open_browser is explicitly true (default False: since v7
+    Jarvis shows his own native window instead of bursting into the
+    browser). The pre-v7 "hud_auto_open" key is deliberately not read.
+    """
     try:
         cfg = jarvis_config.load_config()
-        if cfg.get("hud_auto_open", True) and jarvis_hud.is_running():
+        if cfg.get("hud_auto_open_browser", False) and jarvis_hud.is_running():
             jarvis_hud.open_hud()
     except Exception:
         pass
@@ -1100,7 +1262,7 @@ def listen_loop(no_speak=False):
         _stop_listen_enabled = True  # v5 barge-in: he can say "stop" mid-speech
     _maybe_open_hud()
     print("\n" + "=" * 54)
-    print("  JARVIS AI ASSISTANT v6 - EYES & HANDS - IS LISTENING")
+    print("  JARVIS AI ASSISTANT v7 - ONE ICON - IS LISTENING")
     print(f"  Welcome, {owner}. Say commands like:")
     print("    - 'Jarvis, open VS Code' / 'open ChatGPT' / 'open LinkedIn'")
     print("    - 'Play lofi on YouTube'")
@@ -1137,6 +1299,11 @@ def listen_loop(no_speak=False):
             # v5 butler: queued alerts/suggestions land between listen
             # cycles - never over his voice, never mid-sentence.
             _deliver_butler()
+            # v7: the native window's Quit button / injected commands.
+            if _window_quit_requested():
+                print("\nShutting down Jarvis. Goodbye!")
+                break
+            _process_window_commands(no_speak=no_speak)
             _hud_emit("state", "listening")
             print("Listening... ", end="", flush=True)
             query = listen_once()

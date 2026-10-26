@@ -1,16 +1,22 @@
 #!/usr/bin/env python3
 """
-jarvis.py - Jarvis v6 (Eyes & Hands, M1) main entry point.
+jarvis.py - Jarvis v7 (One Icon, M1) main entry point.
 
 Usage:
     python jarvis.py                      Voice loop (default; text fallback if no mic)
     python jarvis.py --text               Text console loop
     python jarvis.py --once "open github" Run one command, print + speak, exit
     python jarvis.py --once "what time is it" --no-speak
-    python jarvis.py --voice-test        Speak one sentence (human-voice check)
+    python jarvis.py --voice-test         Speak one sentence (human-voice check)
+    python jarvis.py --doctor             Health check (PASS/FAIL/NOTE), exit
+    python jarvis.py --window             Jarvis.app mode: his own floating
+                                          window in the main thread, voice
+                                          loop on a worker thread
 
-The v4 live HUD (jarvis_hud) is started for every mode on a daemon
-thread: even in --once mode the process still exits normally.
+The v4 live HUD (jarvis_hud) still starts for every mode on a daemon
+thread, but since v7 it no longer auto-opens a browser page - it opens
+only when he says "show yourself". The everyday face is the native
+window (jarvis_window) launched by Jarvis.app.
 """
 
 import argparse
@@ -48,30 +54,28 @@ def _banner():
     else:
         brain_line = "Local-only (no Groq/OpenAI key found - local actions still work)"
     print("=" * 54)
-    print("  JARVIS v6 - Eyes & Hands (Mac M1)")
+    print("  JARVIS v7 - One Icon (Mac M1)")
     print(f"  Owner : {cfg.get('owner_name', 'Umesh')}")
     print(f"  Brain : {brain_line}")
+    # v7: a key sitting in the wrong slot is ignored, never used - and
+    # he is told once, plainly, right here (see jarvis_brain key guards).
+    try:
+        for note in jarvis_brain.key_notes():
+            print(f"  {note}")
+    except Exception:
+        pass
     print(f"  Mic   : {jarvis_voice.mic_status()}")
     print(f"  Ears  : speech-to-text = {jarvis_voice.stt_status()}")
     print(f"  Voice : {jarvis_voice.tts_status()}")
     print(f"  Eyes  : {jarvis_notify.notify_status()} (say 'what did I miss')")
-    print(f"  HUD   : live screen at {jarvis_hud.hud_url()} (say 'show yourself')")
+    print(f"  HUD   : local screen at {jarvis_hud.hud_url()} "
+          f"(opens only when you say 'show yourself')")
     print("=" * 54)
 
 
-def main(argv=None):
-    parser = argparse.ArgumentParser(description="Jarvis v6 - Eyes & Hands AI assistant for Mac M1")
-    parser.add_argument("--text", action="store_true", help="Text console loop instead of voice")
-    parser.add_argument("--once", metavar="COMMAND", help="Run a single command and exit")
-    parser.add_argument("--no-speak", action="store_true", help="Print replies, do not speak them")
-    parser.add_argument("--voice-test", action="store_true",
-                        help="Speak one test sentence (checks the human voice) and exit")
-    args = parser.parse_args(argv)
-
-    _banner()
-
+def _start_hud():
     # v4 live HUD: localhost-only, daemon thread, guarded. If the port is
-    # taken Jarvis simply runs without it.
+    # taken Jarvis simply runs without it. v7: never auto-opens a browser.
     try:
         server = jarvis_hud.start_server()
         if server is not None:
@@ -79,6 +83,60 @@ def main(argv=None):
             jarvis_hud.emit("state", "idle")
     except Exception:
         pass
+
+
+def _run_window_mode(args):
+    """
+    v7 Jarvis.app mode: Tk owns the main thread (macOS requirement),
+    the voice loop runs on a daemon worker thread, and the window's
+    Quit button ends both (the loops poll jarvis_window.quit_requested
+    between cycles). Falls back to the plain voice loop when no window
+    can be created (no tkinter / no display).
+    """
+    import threading
+
+    import jarvis_window
+
+    if not jarvis_window.available():
+        print("[No window toolkit here - starting the normal voice mode.]")
+        jarvis_voice.listen_loop(no_speak=args.no_speak)
+        return 0
+
+    worker = threading.Thread(
+        target=lambda: jarvis_voice.listen_loop(no_speak=args.no_speak),
+        name="jarvis-voice-loop", daemon=True)
+    worker.start()
+    ran = jarvis_window.run_window()
+    if not ran:
+        # The window could not be created (headless, no display): the
+        # worker is already running the loop in text fallback if needed;
+        # wait for it like a normal foreground run.
+        worker.join()
+        return 0
+    jarvis_window.request_quit()
+    worker.join(timeout=2)
+    return 0
+
+
+def main(argv=None):
+    parser = argparse.ArgumentParser(description="Jarvis v7 - One Icon AI assistant for Mac M1")
+    parser.add_argument("--text", action="store_true", help="Text console loop instead of voice")
+    parser.add_argument("--once", metavar="COMMAND", help="Run a single command and exit")
+    parser.add_argument("--no-speak", action="store_true", help="Print replies, do not speak them")
+    parser.add_argument("--voice-test", action="store_true",
+                        help="Speak one test sentence (checks the human voice) and exit")
+    parser.add_argument("--doctor", action="store_true",
+                        help="Run the health check (PASS/FAIL/NOTE lines) and exit")
+    parser.add_argument("--window", action="store_true",
+                        help="Jarvis.app mode: native floating window + voice loop")
+    args = parser.parse_args(argv)
+
+    if args.doctor:
+        import jarvis_doctor
+        return jarvis_doctor.run_doctor()
+
+    _banner()
+    _start_hud()
 
     if args.voice_test:
         jarvis_voice.speak(
@@ -94,6 +152,9 @@ def main(argv=None):
         else:
             jarvis_voice.speak(reply)
         return 0
+
+    if args.window:
+        return _run_window_mode(args)
 
     if args.text:
         jarvis_voice.text_loop(no_speak=args.no_speak)

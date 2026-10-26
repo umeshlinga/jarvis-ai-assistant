@@ -13,7 +13,7 @@
   ],
   "groq_stt_model": "whisper-large-v3",
   "groq_tts_model": "canopylabs/orpheus-v1-english",
-  "hud_auto_open": true,
+  "hud_auto_open_browser": false,
   "hud_port": 8765,
   "max_history_turns": 30,
   "notify_enabled": true,
