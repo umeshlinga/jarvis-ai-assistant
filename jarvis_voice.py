@@ -32,6 +32,12 @@ SAMPLE_RATE = 16000
 CHANNELS = 1
 
 _whisper_model_cache = None
+# v3.1 speed fix: if the Whisper load fails ONCE (e.g. a library version
+# clash on the machine), remember it for the whole session and go straight
+# to the Google recognizer. v3.0 retried the slow failing load after every
+# single sentence, which made every reply feel slow.
+_whisper_broken = False
+_whisper_broken_reason = ""
 
 
 def speak(text, no_speak=False):
@@ -80,18 +86,56 @@ def mic_status():
     return "not available - text mode (install sounddevice / check mic permission)"
 
 
-def _record_wav_bytes(seconds=6):
+def _record_wav_bytes(seconds=None, max_seconds=10):
     """
-    Record `seconds` of audio from the default mic with sounddevice and
-    return WAV bytes (16 kHz, mono, 16-bit). Raises on any failure so the
-    caller can fall back to text mode.
+    Record from the default mic with sounddevice and return WAV bytes
+    (16 kHz, mono, 16-bit).
+
+    v3.1: silence detection (simple energy VAD). v3.0 always recorded a
+    fixed 6 seconds, so Jarvis kept "listening" long after the user had
+    finished speaking - the main reason replies felt slow. Now recording
+    stops ~1 second after speech ends, waits up to ~6 seconds for speech
+    to start, and never records longer than max_seconds.
+    Raises on any failure so the caller can fall back to text mode.
     """
     import numpy as np
     import sounddevice as sd
 
-    frames = int(seconds * SAMPLE_RATE)
-    audio = sd.rec(frames, samplerate=SAMPLE_RATE, channels=CHANNELS, dtype="int16")
-    sd.wait()
+    chunk_seconds = 0.25
+    chunk_frames = int(SAMPLE_RATE * chunk_seconds)
+    silence_chunks_to_stop = 4          # 4 x 0.25s = 1.0s of silence ends it
+    wait_chunks_no_speech = 24          # ~6s waiting for speech to start
+    max_chunks = int(max_seconds / chunk_seconds)
+
+    recorded = []
+    speech_started = False
+    silent_after_speech = 0
+    ambient_levels = []
+    threshold = 600.0
+
+    with sd.InputStream(samplerate=SAMPLE_RATE, channels=CHANNELS, dtype="int16") as stream:
+        for i in range(max_chunks):
+            data, _overflowed = stream.read(chunk_frames)
+            arr = np.asarray(data, dtype=np.float64).reshape(-1)
+            recorded.append(arr.astype("int16"))
+            rms = float(np.sqrt(np.mean(arr ** 2))) if arr.size else 0.0
+            if i < 2:
+                ambient_levels.append(rms)
+                if len(ambient_levels) == 2:
+                    threshold = max(500.0, float(np.mean(ambient_levels)) * 2.5)
+                continue
+            if rms > threshold:
+                speech_started = True
+                silent_after_speech = 0
+            elif speech_started:
+                silent_after_speech += 1
+                if silent_after_speech >= silence_chunks_to_stop:
+                    break
+            elif i >= wait_chunks_no_speech:
+                break
+
+    import numpy as np
+    audio = np.concatenate(recorded) if recorded else np.zeros(0, dtype="int16")
     buf = io.BytesIO()
     with wave.open(buf, "wb") as wf:
         wf.setnchannels(CHANNELS)
@@ -112,10 +156,19 @@ def _transcribe_google(wav_bytes):
     wav_bytes.seek(0)
     with sr.AudioFile(wav_bytes) as source:
         audio = recognizer.record(source)
+    cfg = jarvis_config.load_config()
+    language = str(cfg.get("stt_language", "en-IN"))
     try:
-        return recognizer.recognize_google(audio).strip()
+        return recognizer.recognize_google(audio, language=language).strip()
     except sr.UnknownValueError:
         return None
+    except Exception:
+        # If the configured language is ever rejected, retry with the
+        # recognizer default rather than losing the utterance.
+        try:
+            return recognizer.recognize_google(audio).strip()
+        except sr.UnknownValueError:
+            return None
 
 
 def _whisper_available():
@@ -134,6 +187,11 @@ def _transcribe_whisper(wav_path):
     Raises on failure so the caller can fall back to Google.
     """
     global _whisper_model_cache
+    # The Xet download backend in newer huggingface-hub builds is what
+    # produced "open() got an unexpected keyword argument 'metadata_errors'"
+    # on Umesh's Mac - disable it so the classic download path is used.
+    os.environ.setdefault("HF_HUB_DISABLE_XET", "1")
+    os.environ.setdefault("HF_HUB_DISABLE_SYMLINKS_WARNING", "1")
     from faster_whisper import WhisperModel
 
     if _whisper_model_cache is None:
@@ -165,10 +223,12 @@ def listen_once(seconds=6):
     failure falls back to Google with the reason printed. Returns the
     transcript, or None if nothing was understood / no mic.
     """
-    wav_bytes = _record_wav_bytes(seconds=seconds)
+    global _whisper_broken, _whisper_broken_reason
+    wav_bytes = _record_wav_bytes()
     cfg = jarvis_config.load_config()
     engine = str(cfg.get("stt_engine", "auto")).lower()
-    use_whisper = engine == "whisper" or (engine == "auto" and _whisper_available())
+    use_whisper = (engine == "whisper" or (engine == "auto" and _whisper_available())) \
+        and not _whisper_broken
     if use_whisper:
         tmp_path = None
         try:
@@ -178,7 +238,12 @@ def listen_once(seconds=6):
                 tf.write(wav_bytes.read())
             return _transcribe_whisper(tmp_path)
         except Exception as e:
-            print(f"[Offline voice (Whisper) failed: {e} - falling back to Google recognizer]")
+            # v3.1 latch: fail ONCE, then never retry the slow broken
+            # load again this session - Google takes over silently.
+            _whisper_broken = True
+            _whisper_broken_reason = str(e)
+            print(f"[Offline voice had a problem ({e}). Using the fast online "
+                  f"recognizer for the rest of this session.]")
         finally:
             if tmp_path:
                 try:

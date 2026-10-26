@@ -34,6 +34,9 @@ DEFAULTS = {
     # "google" (online, free recognizer) | "whisper" (fully offline).
     "stt_engine": "auto",
     "whisper_model": "base.en",
+    # Recognition language for the Google recognizer. en-IN matches
+    # Indian-English pronunciation/spellings better for Umesh than en-US.
+    "stt_language": "en-IN",
     # Occasional short follow-up suggestions after a few actions.
     "suggestions": True,
 }

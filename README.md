@@ -8,6 +8,21 @@ A voice-controlled AI assistant for **MacBook M1 / Apple Silicon (arm64)**, rebu
 
 ---
 
+## v3.1 — speed + accuracy fix (from Umesh's first live run)
+
+His first voice run worked, but every sentence was slow: the offline Whisper load was failing on his Mac with a huggingface-hub error (`open() got an unexpected keyword argument 'metadata_errors'`) and v3.0 retried that slow failing load after **every** sentence before falling back to Google. v3.1 fixes this three ways:
+
+| Fix | What changed |
+|---|---|
+| **Fail-once latch** | If the Whisper load fails once, Jarvis remembers it for the session and goes straight to the fast Google recognizer — no retry, no error spam |
+| **Xet disabled** | `HF_HUB_DISABLE_XET=1` is set before loading Whisper (the Xet download backend is what produced the `metadata_errors` crash), giving Whisper a clean classic-download path on the next fresh start |
+| **Silence detection** | Recording no longer runs a fixed 6 seconds: it stops ~1 second after you stop speaking, so replies start much sooner |
+| **Accent accuracy** | Google recognition now uses `stt_language` (default **en-IN**, better for Indian-English speech); change it in `~/.openjarvis/config.json` |
+
+To update an installed copy: stop Jarvis with **Ctrl+C**, then `git pull`, then `./jarvis` again. No reinstall needed. To STOP Jarvis in voice mode at any time: press **Ctrl+C**, or say **"Jarvis, goodbye"** (typing `quit` does not work in voice mode — he isn't reading the keyboard while listening).
+
+---
+
 ## What's new in v2
 
 | Area | Original | v2 (this build) |
