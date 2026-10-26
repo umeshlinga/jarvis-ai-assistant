@@ -538,6 +538,57 @@ def test_v4_web_routes_stubbed():
         jarvis_web.search_and_tell, jarvis_web.read_website = orig_search, orig_read
 
 
+def test_v41_job_route_stubbed():
+    # v4.1 headline fix: spoken job searches must DO the work (route to
+    # jarvis_web.job_search), never fall through to the LLM for a
+    # "check LinkedIn and Indeed" suggestion reply.
+    import jarvis_web
+    orig_job = jarvis_web.job_search
+    seen = {}
+
+    def fake_job(q):
+        seen["q"] = q
+        return "JOBSEARCH DONE"
+
+    jarvis_web.job_search = fake_job
+    try:
+        for phrase in ("show me the job openings in indianapolis in bioinformatics",
+                       "what are the job openings in indianapolis",
+                       "find jobs in indianapolis",
+                       "bioinformatics jobs in indianapolis"):
+            seen.clear()
+            r = jarvis_actions.try_action(phrase)
+            assert r == "JOBSEARCH DONE", (phrase, r)
+            assert seen.get("q") == phrase, (phrase, seen)
+    finally:
+        jarvis_web.job_search = orig_job
+
+
+def test_v41_general_search_route_stubbed():
+    # v4.1 widened route: everyday external-info phrasings reach the web
+    # search with a cleaned topic; "show" also opens the results page.
+    import jarvis_web
+    orig_search = jarvis_web.search_and_tell
+
+    def fake_search(topic, open_results=False):
+        return f"SEARCHED:{topic}:{open_results}"
+
+    jarvis_web.search_and_tell = fake_search
+    try:
+        r = jarvis_actions.try_action("show me electric cars")
+        assert r == "SEARCHED:electric cars:True", r
+        r = jarvis_actions.try_action("find out about black holes")
+        assert r == "SEARCHED:black holes:False", r
+        r = jarvis_actions.try_action("what are the latest iphone prices")
+        assert r == "SEARCHED:latest iphone prices:False", r
+        r = jarvis_actions.try_action("search electric cars")
+        assert r == "SEARCHED:electric cars:False", r
+        r = jarvis_actions.try_action("look up the moon landing")
+        assert r.startswith("SEARCHED:") and "moon landing" in r, r
+    finally:
+        jarvis_web.search_and_tell = orig_search
+
+
 def test_v4_code_route_stubbed():
     import jarvis_code
     orig = jarvis_code.create_code
@@ -582,6 +633,7 @@ ALL_TESTS = [
     test_v4_task_status_route, test_v4_hud_route, test_v4_open_browser,
     test_v4_copy_file, test_v4_email_attach, test_v4_web_routes_stubbed,
     test_v4_code_route_stubbed,
+    test_v41_job_route_stubbed, test_v41_general_search_route_stubbed,
 ]
 
 

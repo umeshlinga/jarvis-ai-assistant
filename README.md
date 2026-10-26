@@ -1,4 +1,4 @@
-# Jarvis AI Assistant — Advanced v4 "Supercomputer" (M1)
+# Jarvis AI Assistant — Advanced v4.1 "Supercomputer" (M1)
 
 > Built on the original jarvis-ai-assistant by saipradeep77964 (github.com/saipradeep77964/jarvis-ai-assistant), extended by Umesh Linga.
 
@@ -6,13 +6,38 @@ A voice-controlled AI assistant for **MacBook M1 / Apple Silicon (arm64)**, rebu
 
 ---
 
+## What's new in v4.1 — "Do the work" + human voice
+
+v4.1 is built from Umesh's first real v4 run (screenshots, not guesses). Four fixes:
+
+**1. Jarvis DOES the work now — he doesn't just talk about it.** In v4, "show me the job openings in Indianapolis in bioinformatics" matched no command, fell through to chat, and got generic *"check LinkedIn and Indeed"* suggestions. Now a job search **acts**: Jarvis opens **LinkedIn Jobs with the live results in your browser** and **reads the top findings aloud** ("I searched for bioinformatics jobs in Indianapolis and opened LinkedIn Jobs with the live results. Here's what I found: …"). Everyday information phrasings act too — **"show me …"**, **"find me …"**, **"find out …"**, **"what are the …"**, **"any news about …"**, a bare **"search …"** or **"look up …"** all run a real web search; when you said "show", the results page opens in your browser as well, so you can *see* the work.
+
+**2. Dead-model latch (speed + a clean terminal).** Groq no longer offers `llama-3.1-8b-instant` on this account — v4 retried it on *every* message and ate a 404 before answering. The fast chat model is now **`openai/gpt-oss-20b`** (already proven on his key), an old saved `llama-3.1-8b-instant` config value migrates automatically, and **any** model that ever answers "model not found" is skipped silently for the rest of the session — mentioned once, never retried.
+
+**3. Sharper ears.** Groq Whisper now uses the full **`whisper-large-v3`** model (accuracy over turbo) plus a **vocabulary prompt** (`stt_vocab_prompt`): Whisper is told the words you actually say — *Jarvis, Umesh Linga, bioinformatics, Indianapolis, LinkedIn, resume…* — the exact words v4 garbled ("bioinformatics" → "Bighton"). Edit the prompt in `~/.openjarvis/config.json` to teach him new words.
+
+**4. A human voice.** See the next section — the robotic Mac voice is now the fallback, not the voice.
+
+### Human voice (new in v4.1)
+
+Jarvis now speaks with a **neural, human-sounding voice** instead of the robotic macOS `say` voice. How it works:
+
+- **Engine:** Groq's Orpheus text-to-speech (`canopylabs/orpheus-v1-english`), using the **same Groq key** you already have — no new account, no new key. If an OpenAI key is configured, OpenAI's neural TTS is the second choice; macOS `say` is the final fallback (config `tts_engine`: `"auto"` / `"groq"` / `"openai"` / `"say"`).
+- **Voice:** default **`daniel`** — a male voice, the Jarvis feel. Male alternatives: **austin**, **troy**. Female: **hannah**, **autumn**, **diana**. To change it, edit `~/.openjarvis/config.json` and set `"tts_voice": "hannah"` (any of the six), then restart Jarvis.
+- **Test it:** `./jarvis --voice-test` speaks one sentence in the current voice.
+- **How it stays natural:** replies are split into sentence-sized chunks (Orpheus takes ~200 characters at a time) and played back-to-back with `afplay`, so it sounds like one person talking.
+- **If the neural voice fails** (no internet, model unavailable), Jarvis says so **once** in the terminal and uses the Mac voice for the rest of the session — replies are never blocked or lost.
+- **Honest note:** the neural voice **needs internet**. Offline, Jarvis falls back to macOS `say`. For a better *offline* voice, download a macOS **Premium** voice: **System Settings → Accessibility → Spoken Content → System Voice → Manage Voices…**, pick a Premium/Enhanced voice (e.g. Samantha Premium or Daniel Premium), download it, select it as the System Voice, and set `"voice"` in the config to its name with `"tts_engine": "say"` if you want it always.
+
+---
+
 ## What's new in v4 — "Supercomputer"
 
 v4 is a speed + awareness upgrade on top of v3. Everything from v3 still works; this is what changed:
 
-**A. Fast, accurate ears (the big fix).** In `auto` mode Jarvis now transcribes your voice with **Groq's Whisper API** (`whisper-large-v3-turbo`) using the same free Groq key as the brain — much faster than the free Google recognizer, and far better with Indian-English accents. The order is: **Groq Whisper → local faster-whisper → Google**. If Groq's ears hiccup (network / rate limit), Jarvis falls through to the next recognizer in the same breath and rests Groq for 60 seconds, then tries it again — one bad minute never kills it. Recording still stops ~1 second after you finish speaking (VAD), so there's no long dead air at the end of every sentence.
+**A. Fast, accurate ears (the big fix).** In `auto` mode Jarvis now transcribes your voice with **Groq's Whisper API** using the same free Groq key as the brain — much faster than the free Google recognizer, and far better with Indian-English accents. *(v4.1: the model is now the full `whisper-large-v3`, plus a vocabulary prompt — see above.)* The order is: **Groq Whisper → local faster-whisper → Google**. If Groq's ears hiccup (network / rate limit), Jarvis falls through to the next recognizer in the same breath and rests Groq for 60 seconds, then tries it again — one bad minute never kills it. Recording still stops ~1 second after you finish speaking (VAD), so there's no long dead air at the end of every sentence.
 
-**B. Two-speed brain + a companion who knows you.** Everyday chat runs on a fast model (`llama-3.1-8b-instant`); deep / advisory questions ("what do you think…", advice, analysis) use the big models. Spoken answers are **two to four natural sentences** by default — say "explain in detail" or "tell me more" when you want the long version (that kills the old "plain text" feel). The system prompt carries a short personal context (config `personal_context` — who you are, your field, your job search) so answers talk about *your* situation instead of generic advice. Edit it in `~/.openjarvis/config.json`; it lives on your Mac and only travels inside your own Groq/OpenAI requests.
+**B. Two-speed brain + a companion who knows you.** Everyday chat runs on a fast model; deep / advisory questions ("what do you think…", advice, analysis) use the big models. *(v4.1: the fast model is `openai/gpt-oss-20b` — Groq dropped `llama-3.1-8b-instant` from this account, and dead models are now latched off instead of retried per message.)* Spoken answers are **two to four natural sentences** by default — say "explain in detail" or "tell me more" when you want the long version (that kills the old "plain text" feel). The system prompt carries a short personal context (config `personal_context` — who you are, your field, your job search) so answers talk about *your* situation instead of generic advice. Edit it in `~/.openjarvis/config.json`; it lives on your Mac and only travels inside your own Groq/OpenAI requests.
 
 **C. Live visual HUD.** Jarvis now has a face you can watch: a localhost-only page (`http://127.0.0.1:8765`, config `hud_port`) showing his current state (listening / thinking / speaking / working), the live transcript ("You said" / "Jarvis"), and an activity + background-task feed. It opens automatically on startup (config `hud_auto_open`), or say **"show yourself" / "open the hud"** any time. No internet needed — Jarvis serves it himself, bound to 127.0.0.1 only.
 
@@ -208,9 +233,9 @@ Jarvis keeps a simple address book at `~/.openjarvis/contacts.json` (the install
 
 Phone is used for iMessage, WhatsApp (`wa.me`) and FaceTime; email for iMessage/FaceTime and prefilled email. A name Jarvis doesn't know is never guessed — he asks you for the number/email instead of sending to the wrong person.
 
-### Speech engines (v4) + offline voice (faster-whisper)
+### Speech engines (v4.1) + offline voice (faster-whisper)
 
-By default (`stt_engine: "auto"` in the config) Jarvis's ears run in this order: **Groq Whisper** (online, using your Groq key — fastest, best with Indian-English) → **faster-whisper locally** (if installed — your voice never leaves the Mac) → **Google's online recognizer**. A Groq ears error falls through in the same listen and rests Groq for 60 seconds. Set `stt_engine` to `"groq"`, `"whisper"` or `"google"` to force one engine.
+By default (`stt_engine: "auto"` in the config) Jarvis's ears run in this order: **Groq Whisper** (online, using your Groq key — the full `whisper-large-v3` model plus your `stt_vocab_prompt` vocabulary hint; fastest, best with Indian-English) → **faster-whisper locally** (if installed — your voice never leaves the Mac) → **Google's online recognizer**. A Groq ears error falls through in the same listen and rests Groq for 60 seconds. Set `stt_engine` to `"groq"`, `"whisper"` or `"google"` to force one engine.
 
 Install it via the installer's prompt, or any time with:
 
@@ -256,7 +281,8 @@ Text mode is also the automatic fallback whenever no microphone is available.
 - `openai_model` — "gpt-4.1-mini" · `openai_base_url` — "https://api.openai.com/v1"
 - `max_history_turns` — 30
 - `stt_engine` — "auto" / "groq" / "google" / "whisper" · `whisper_model` — "base.en" · `suggestions` — true
-- **v4 keys:** `groq_stt_model` — "whisper-large-v3-turbo" · `fast_model` — "llama-3.1-8b-instant" (chat tier; `groq_models` is the deep tier) · `personal_context` — short bio the brain uses to talk about your situation · `hud_port` — 8765 · `hud_auto_open` — true · `code_dir` — "~/jarvis-projects"
+- **v4 keys:** `groq_stt_model` — "whisper-large-v3" (v4.1; was the turbo variant) · `stt_vocab_prompt` — words Whisper should expect (your name, your field, your apps) · `fast_model` — "openai/gpt-oss-20b" (chat tier; `groq_models` is the deep tier; a saved "llama-3.1-8b-instant" auto-migrates to this) · `personal_context` — short bio the brain uses to talk about your situation · `hud_port` — 8765 · `hud_auto_open` — true · `code_dir` — "~/jarvis-projects"
+- **v4.1 voice keys:** `tts_engine` — "auto" / "groq" / "openai" / "say" · `groq_tts_model` — "canopylabs/orpheus-v1-english" · `tts_voice` — "daniel" (male: daniel/austin/troy; female: hannah/autumn/diana) · `openai_tts_model` — "gpt-4o-mini-tts" · `openai_tts_voice` — "nova"
 
 Files Jarvis keeps in `~/.openjarvis/`: `config.json`, `contacts.json`, `free.key` (Groq), `openai.key` (optional), `history.json`, `notes.txt`, and optionally `mail_cache.txt` (see below).
 
@@ -271,7 +297,8 @@ Files Jarvis keeps in `~/.openjarvis/`: `config.json`, `contacts.json`, `free.ke
 
 - **No real Gmail reading.** Jarvis cannot access your Gmail account. "Read my emails" says exactly that and opens Gmail for you. The only exception: if *you* save a briefing text at `~/.openjarvis/mail_cache.txt`, Jarvis will read that file back to you — it still never fetches mail itself. (The original version invented a fake inbox summary; v2 removes that.)
 - **Market signals are simple moving averages** over Yahoo Finance data — a rough technical indicator, **not financial advice**.
-- **Speech recognition (v4)**: in `auto` mode your voice audio for each command is sent to **Groq's Whisper API** for transcription (fast, best accent handling). If Groq's ears fail, Jarvis falls back to **faster-whisper locally** (fully local after the one-time model download, if installed) and then to **Google's free recognizer** (audio sent to Google, exactly like the original). Set `stt_engine: "whisper"` to keep transcription fully on the Mac. Speech *output* is always local (macOS `say`).
+- **Speech recognition (v4)**: in `auto` mode your voice audio for each command is sent to **Groq's Whisper API** for transcription (fast, best accent handling). If Groq's ears fail, Jarvis falls back to **faster-whisper locally** (fully local after the one-time model download, if installed) and then to **Google's free recognizer** (audio sent to Google, exactly like the original). Set `stt_engine: "whisper"` to keep transcription fully on the Mac. Speech *output* (v4.1) is the neural human voice while online (your reply text is sent to Groq's Orpheus TTS, or OpenAI TTS if configured) and macOS `say` when offline or if the neural voice fails — see "Human voice" above.
+- **Neural voice availability depends on your Groq account.** If Orpheus (`canopylabs/orpheus-v1-english`) is not enabled on your Groq key, the first reply will fall back to the Mac voice and the terminal will show one "[Human voice not available…]" line. The fix is then to point `groq_tts_model` in `~/.openjarvis/config.json` at a speech model your account does have (check console.groq.com → Models), or set `tts_engine: "say"` to stop trying.
 - **First-use "Allow" prompts are Apple's, not Jarvis's**: the first time Jarvis touches Messages, Mail, Calendar/Reminders, or Accessibility features, macOS will pop an "Allow" prompt. Click Allow — Jarvis cannot click it for you, and until you do, that one feature stays blocked.
 - **WhatsApp still can't silently attach or send arbitrary files** — it opens the prepared chat (and presses Enter only with a known number + Accessibility + your "yes"). Email attachments go through **Apple Mail, visibly**, and are never auto-sent.
 - **Online brain + ears need internet.** Offline, Jarvis still runs all local commands, and transcription can stay local with faster-whisper — but open-ended thinking, web search/reading, and Groq ears all need a connection, and he says so instead of pretending.
@@ -287,11 +314,11 @@ Files Jarvis keeps in `~/.openjarvis/`: `config.json`, `contacts.json`, `free.ke
 ## Tests
 
 ```bash
-python3 tests/test_actions.py     # actions router (stubs all system helpers; nothing opens, no network)
-python3 tests/test_voice.py       # STT engines: v4 Groq-ears order/latch + v3.1 whisper latch (all stubbed)
-python3 tests/test_brain_tiers.py # v4 fast/deep model routing + prompt (stubbed client)
+python3 tests/test_actions.py     # actions router (stubs all system helpers; nothing opens, no network) + v4.1 do-the-work routing
+python3 tests/test_voice.py       # STT engines: Groq-ears order/latch + whisper latch + v4.1 vocab prompt, text chunking, neural-TTS order/latch (all stubbed)
+python3 tests/test_brain_tiers.py # v4 fast/deep model routing + prompt + v4.1 dead-model migration/latch (stubbed client)
 python3 tests/test_hud.py         # v4 HUD server on an ephemeral port (localhost only)
-python3 tests/test_web.py         # v4 web search/read (HTTP layer stubbed)
+python3 tests/test_web.py         # v4 web search/read + v4.1 job search & topic cleaning (HTTP layer stubbed)
 python3 tests/test_code.py        # v4 voice coding in a temp sandbox (LLM stubbed)
 python3 tests/test_tasks.py       # v4 background-task manager + announcer
 ```

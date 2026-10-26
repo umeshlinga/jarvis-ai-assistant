@@ -7,6 +7,7 @@ Usage:
     python jarvis.py --text               Text console loop
     python jarvis.py --once "open github" Run one command, print + speak, exit
     python jarvis.py --once "what time is it" --no-speak
+    python jarvis.py --voice-test        Speak one sentence (human-voice check)
 
 The v4 live HUD (jarvis_hud) is started for every mode on a daemon
 thread: even in --once mode the process still exits normally.
@@ -40,12 +41,12 @@ def _banner():
     else:
         brain_line = "Local-only (no Groq/OpenAI key found - local actions still work)"
     print("=" * 54)
-    print("  JARVIS v4 - Supercomputer (Mac M1)")
+    print("  JARVIS v4.1 - Supercomputer (Mac M1)")
     print(f"  Owner : {cfg.get('owner_name', 'Umesh')}")
     print(f"  Brain : {brain_line}")
     print(f"  Mic   : {jarvis_voice.mic_status()}")
     print(f"  Ears  : speech-to-text = {jarvis_voice.stt_status()}")
-    print(f"  Voice : {cfg.get('voice', 'Samantha')} @ {cfg.get('speech_rate', 185)} wpm (macOS say)")
+    print(f"  Voice : {jarvis_voice.tts_status()}")
     print(f"  HUD   : live screen at {jarvis_hud.hud_url()} (say 'show yourself')")
     print("=" * 54)
 
@@ -55,6 +56,8 @@ def main(argv=None):
     parser.add_argument("--text", action="store_true", help="Text console loop instead of voice")
     parser.add_argument("--once", metavar="COMMAND", help="Run a single command and exit")
     parser.add_argument("--no-speak", action="store_true", help="Print replies, do not speak them")
+    parser.add_argument("--voice-test", action="store_true",
+                        help="Speak one test sentence (checks the human voice) and exit")
     args = parser.parse_args(argv)
 
     _banner()
@@ -68,6 +71,12 @@ def main(argv=None):
             jarvis_hud.emit("state", "idle")
     except Exception:
         pass
+
+    if args.voice_test:
+        jarvis_voice.speak(
+            "Hello Umesh, this is my new human voice. If I sound like a "
+            "person talking to you, the neural voice is working.")
+        return 0
 
     if args.once:
         reply = jarvis_brain.think(args.once, confirm=_confirm_prompt)

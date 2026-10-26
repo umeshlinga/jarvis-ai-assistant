@@ -825,6 +825,11 @@ def _try_action_impl(q, confirm=None):
 
     # Browser brain (jarvis_web)
     import jarvis_web
+    # v4.1 DO-THE-WORK: a job search always ACTS - opens LinkedIn Jobs
+    # with the live results and reads findings aloud - instead of the
+    # brain replying with "check LinkedIn and Indeed" suggestions.
+    if jarvis_web.is_job_search_query(q_clean):
+        return jarvis_web.job_search(q_clean)
     if q_clean in ("open the first result", "open first result", "open the top result"):
         return jarvis_web.open_first_result()
     if q_clean.startswith("read about "):
@@ -844,6 +849,13 @@ def _try_action_impl(q, confirm=None):
     m = re.search(r"^read\s+((?:https?://)?[\w-]+(?:\s+dot\s+|\.)[\w./-]*)$", q_clean)
     if m:
         return jarvis_web.read_website(m.group(1).strip())
+    # v4.1 widened external-info route: everyday phrasings ("show me
+    # ...", "find out ...", "what are the ...", "any news about ...",
+    # a bare "search ..." / "look up ...") DO the search instead of
+    # chatting about it. "show" also opens the results page visually.
+    _topic = jarvis_web.general_search_topic(q_clean)
+    if _topic:
+        return jarvis_web.search_and_tell(_topic, open_results=("show" in q_clean))
 
     # Email with an attachment (Apple Mail, visible, never auto-sent)
     m = re.search(r"email\s+(.+?)\s+and\s+attach\s+(.+)$", q_orig, re.IGNORECASE)

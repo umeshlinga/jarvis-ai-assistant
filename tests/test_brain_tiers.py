@@ -83,6 +83,61 @@ def main():
     hist = jarvis_brain._load_history()
     check("history persisted", len(hist) >= 4)
 
+    # ---- v4.1: fast-model default + saved-config migration ----
+    check("fast tier default is openai/gpt-oss-20b",
+          jarvis_brain._models_for("groq", tier="fast")[0] == "openai/gpt-oss-20b")
+    cfg["fast_model"] = "llama-3.1-8b-instant"  # a config.json saved by v4
+    check("saved llama-3.1-8b-instant migrates to the new default",
+          jarvis_brain._models_for("groq", tier="fast")[0] == "openai/gpt-oss-20b")
+    cfg["fast_model"] = "my-custom-fast-model"
+    check("an explicit non-dead fast_model is honoured",
+          jarvis_brain._models_for("groq", tier="fast")[0] == "my-custom-fast-model")
+    cfg["fast_model"] = "openai/gpt-oss-20b"
+
+    # ---- v4.1: dead-model latch (404 attempted once, never again) ----
+    class _NotFoundError(Exception):
+        status_code = 404
+
+        def __str__(self):
+            return ("Error code: 404 - {'error': {'message': 'The model "
+                    "`dead-model-x` does not exist or you do not have access "
+                    "to it.', 'code': 'model_not_found'}}")
+
+    attempts = []
+
+    class _LatchCompletions:
+        def create(self, model, messages, max_tokens, temperature):
+            attempts.append(model)
+            if model == "dead-model-x":
+                raise _NotFoundError()
+            return _Resp("answer from " + model)
+
+    class _LatchClient:
+        def __init__(self):
+            self.chat = type("Chat", (), {"completions": _LatchCompletions()})()
+
+    jarvis_brain._get_client = lambda provider: _LatchClient()
+    jarvis_brain._dead_models.clear()
+    jarvis_brain._cooldown_until = 0.0
+    old_models = list(cfg.get("groq_models") or [])
+    cfg["fast_model"] = "dead-model-x"
+    cfg["groq_models"] = ["dead-model-x", "good-model-y"]
+    try:
+        r1 = jarvis_brain.think("hello there, just a quick chat")
+        check("chat survives a dead fast model via the next model",
+              r1 == "answer from good-model-y")
+        check("dead model attempted exactly once",
+              attempts.count("dead-model-x") == 1)
+        attempts.clear()
+        r2 = jarvis_brain.think("another quick chat please")
+        check("second chat answered by the good model",
+              r2 == "answer from good-model-y")
+        check("latched model never retried", "dead-model-x" not in attempts)
+    finally:
+        cfg["fast_model"] = "openai/gpt-oss-20b"
+        cfg["groq_models"] = old_models
+        jarvis_brain._dead_models.clear()
+
     print(f"\n{len(PASSED)}/{len(PASSED)} brain-tier tests passed.")
 
 

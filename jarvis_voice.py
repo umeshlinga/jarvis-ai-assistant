@@ -14,12 +14,16 @@ AudioFile - exactly the recognizer the original used, with no PyAudio
 required at runtime. If no microphone / sounddevice is available, Jarvis
 falls back to text mode instead of crashing.
 
-Speaking uses macOS `say` (voice + rate from config); on non-Mac systems
-it prints only (pyttsx3 is an optional extra, never a requirement).
+Speaking (v4.1): a neural HUMAN voice first - Groq's Orpheus TTS using
+the same Groq key as the brain/ears (OpenAI TTS as second choice) -
+played with afplay; macOS `say` (voice + rate from config) is the
+always-available fallback and the offline voice. On non-Mac systems it
+prints only (pyttsx3 is an optional extra, never a requirement).
 """
 
 import io
 import os
+import re
 import subprocess
 import sys
 import tempfile
@@ -43,6 +47,10 @@ _whisper_broken_reason = ""
 # v4: Groq Whisper STT failure latch - a 60-second rest, not forever:
 # one bad network minute must not kill the fast ears for the session.
 _groq_stt_broken_until = 0.0
+# v4.1: neural-TTS (human voice) failure latch - if the neural voice
+# fails once, Jarvis says so once and uses the Mac voice for the rest
+# of the session. No retry spam, and a reply is never blocked by TTS.
+_tts_neural_broken = False
 
 
 def _hud_emit(kind, text):
@@ -64,15 +72,171 @@ def _register_announcer(no_speak=False):
         pass
 
 
-def speak(text, no_speak=False):
-    """Print the reply, and speak it with macOS `say` when available."""
+# --------------------------------------------------------------------------
+# v4.1 human voice: neural text-to-speech (Groq Orpheus -> OpenAI -> say)
+# --------------------------------------------------------------------------
+
+def _split_long(text, limit):
+    """Split one over-long sentence into <= limit pieces (commas, then spaces)."""
+    pieces = []
+    rest = text.strip()
+    while len(rest) > limit:
+        cut = rest.rfind(", ", 0, limit)
+        if cut < limit // 3:
+            cut = rest.rfind(" ", 0, limit)
+        if cut <= 0:
+            cut = limit
+        pieces.append(rest[:cut + 1].strip() if rest[cut:cut + 1] == "," else rest[:cut].strip())
+        rest = rest[cut:].lstrip(", ").strip()
+    if rest:
+        pieces.append(rest)
+    return [p for p in pieces if p]
+
+
+def chunk_text(text, limit=180):
+    """
+    Split spoken text into chunks of at most `limit` characters, keeping
+    whole sentences together where possible (Orpheus accepts ~200 chars
+    per request, so replies are synthesised sentence-group by
+    sentence-group and played back-to-back - it sounds like one person
+    talking, not fragments).
+    """
+    text = re.sub(r"\s+", " ", (text or "")).strip()
     if not text:
-        return
-    _hud_emit("state", "speaking")
-    _hud_emit("reply", text)
-    print(f"\n[JARVIS]: {text}\n")
-    if no_speak:
-        return
+        return []
+    sentences = [s.strip() for s in re.split(r"(?<=[.!?])\s+", text) if s.strip()]
+    chunks = []
+    cur = ""
+    for s in sentences:
+        if len(s) > limit:
+            if cur:
+                chunks.append(cur)
+                cur = ""
+            chunks.extend(_split_long(s, limit))
+        elif not cur:
+            cur = s
+        elif len(cur) + 1 + len(s) <= limit:
+            cur = cur + " " + s
+        else:
+            chunks.append(cur)
+            cur = s
+    if cur:
+        chunks.append(cur)
+    return chunks
+
+
+def _openai_key():
+    """The OpenAI key Jarvis may have (brain key store), or None."""
+    try:
+        import jarvis_brain
+        return jarvis_brain.openai_key()
+    except Exception:
+        return None
+
+
+def _tts_client(provider):
+    """OpenAI-SDK client pointed at the provider's speech endpoint."""
+    from openai import OpenAI  # lazy, like everywhere else
+
+    cfg = jarvis_config.load_config()
+    if provider == "groq":
+        return OpenAI(api_key=_groq_key(), base_url=cfg.get("groq_base_url"),
+                      timeout=30.0)
+    return OpenAI(api_key=_openai_key(), base_url=cfg.get("openai_base_url"),
+                  timeout=30.0)
+
+
+def _synth_chunk(client, model, voice_name, text):
+    """One speech synthesis call; returns WAV bytes. Raises on failure."""
+    resp = client.audio.speech.create(
+        model=model, voice=voice_name, input=text, response_format="wav")
+    if isinstance(resp, (bytes, bytearray)):
+        return bytes(resp)
+    data = getattr(resp, "content", None)
+    if data is None and hasattr(resp, "read"):
+        data = resp.read()
+    if data is None and hasattr(resp, "iter_bytes"):
+        data = b"".join(resp.iter_bytes())
+    if not data:
+        raise RuntimeError("speech API returned no audio")
+    return bytes(data)
+
+
+def _play_audio_file(path):
+    """Play a WAV file (macOS afplay). Raises anywhere else / on error."""
+    if sys.platform != "darwin":
+        raise RuntimeError("afplay is only available on macOS")
+    subprocess.run(["afplay", path], check=True)
+
+
+def _tts_attempts():
+    """
+    Ordered neural-TTS attempts from config: [(provider, model, voice,
+    chunk_limit)]. Empty when tts_engine forces `say` or no key exists -
+    in which case nothing was attempted and nothing is latched.
+    """
+    cfg = jarvis_config.load_config()
+    engine = str(cfg.get("tts_engine", "auto")).lower()
+    attempts = []
+    if engine in ("auto", "groq") and _groq_key():
+        attempts.append(("groq",
+                         str(cfg.get("groq_tts_model", "canopylabs/orpheus-v1-english")),
+                         str(cfg.get("tts_voice", "daniel")), 180))
+    if engine in ("auto", "openai") and _openai_key():
+        attempts.append(("openai",
+                         str(cfg.get("openai_tts_model", "gpt-4o-mini-tts")),
+                         str(cfg.get("openai_tts_voice", "nova")), 400))
+    return attempts
+
+
+def _speak_neural(text):
+    """
+    Try to speak `text` with a neural (human) voice. Returns True when
+    the whole reply was spoken neurally. Any failure falls down the
+    chain; when every configured engine fails, the neural voice latches
+    OFF for the session (one printed line) and the caller uses `say`.
+    """
+    global _tts_neural_broken
+    if _tts_neural_broken:
+        return False
+    attempts = _tts_attempts()
+    if not attempts:
+        return False
+    last_error = None
+    for provider, model, voice_name, limit in attempts:
+        tmp_path = None
+        try:
+            client = _tts_client(provider)
+            for chunk in chunk_text(text, limit=limit):
+                data = _synth_chunk(client, model, voice_name, chunk)
+                with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as tf:
+                    tmp_path = tf.name
+                    tf.write(data)
+                try:
+                    _play_audio_file(tmp_path)
+                finally:
+                    try:
+                        os.remove(tmp_path)
+                    except Exception:
+                        pass
+                    tmp_path = None
+            return True
+        except Exception as e:
+            last_error = e
+            if tmp_path:
+                try:
+                    os.remove(tmp_path)
+                except Exception:
+                    pass
+            continue  # fall down the chain to the next engine
+    _tts_neural_broken = True
+    print(f"[Human voice not available right now ({last_error}) - using the "
+          f"Mac voice for the rest of this session.]")
+    return False
+
+
+def _speak_legacy(text):
+    """The v4 voice path: macOS `say` on a Mac, else optional pyttsx3."""
     if sys.platform == "darwin":
         cfg = jarvis_config.load_config()
         voice = str(cfg.get("voice", "Samantha"))
@@ -82,7 +246,6 @@ def speak(text, no_speak=False):
             return
         except Exception:
             pass
-    # Non-Mac fallback: optional pyttsx3 if the user installed it, else print-only.
     try:
         import pyttsx3  # optional dependency (requirements-optional.txt)
         engine = pyttsx3.init()
@@ -90,6 +253,39 @@ def speak(text, no_speak=False):
         engine.runAndWait()
     except Exception:
         pass
+
+
+def tts_status():
+    """Human line describing the speaking voice that will be used."""
+    cfg = jarvis_config.load_config()
+    engine = str(cfg.get("tts_engine", "auto")).lower()
+    say_desc = f"macOS say ({cfg.get('voice', 'Samantha')} @ {cfg.get('speech_rate', 185)} wpm)"
+    if engine == "say":
+        return say_desc
+    if engine in ("auto", "groq") and _groq_key():
+        return (f"neural (groq {cfg.get('groq_tts_model', 'canopylabs/orpheus-v1-english')}, "
+                f"voice {cfg.get('tts_voice', 'daniel')}) with macOS say fallback")
+    if engine in ("auto", "openai") and _openai_key():
+        return (f"neural (openai {cfg.get('openai_tts_model', 'gpt-4o-mini-tts')}, "
+                f"voice {cfg.get('openai_tts_voice', 'nova')}) with macOS say fallback")
+    return say_desc + " - no neural voice key configured"
+
+
+def speak(text, no_speak=False):
+    """
+    Print the reply, then speak it: neural human voice first (v4.1),
+    the macOS `say` voice as the always-available fallback.
+    """
+    if not text:
+        return
+    _hud_emit("state", "speaking")
+    _hud_emit("reply", text)
+    print(f"\n[JARVIS]: {text}\n")
+    if no_speak:
+        return
+    if _speak_neural(text):
+        return
+    _speak_legacy(text)
 
 
 def mic_available():
@@ -217,10 +413,13 @@ def _groq_key():
 def _transcribe_groq(wav_bytes):
     """
     v4 flagship ears: Groq's Whisper API (OpenAI-compatible
-    /audio/transcriptions, model from config groq_stt_model, default
-    whisper-large-v3-turbo). Much faster than the free Google recognizer
-    and far better with Indian-English accents. Uses the SAME key as the
-    brain. Raises on any failure so listen_once can fall through.
+    /audio/transcriptions, model from config groq_stt_model). v4.1: the
+    default model is whisper-large-v3 (full model - accuracy over the
+    turbo variant) and a vocabulary prompt (config stt_vocab_prompt)
+    biases Whisper towards the words Umesh actually says - his name,
+    "bioinformatics", "Indianapolis" - the words v4's ears garbled live
+    ("bioinformatics" -> "Bighton"). Uses the SAME key as the brain.
+    Raises on any failure so listen_once can fall through.
     """
     key = _groq_key()
     if not key:
@@ -236,11 +435,22 @@ def _transcribe_groq(wav_bytes):
     audio_file = io.BytesIO(data)
     audio_file.name = "jarvis.wav"  # the API uses the suffix for the format
     language = str(cfg.get("stt_language", "en-IN")).split("-")[0].lower() or "en"
-    resp = client.audio.transcriptions.create(
-        model=str(cfg.get("groq_stt_model", "whisper-large-v3-turbo")),
-        file=audio_file,
-        language=language,
-    )
+    kwargs = {
+        "model": str(cfg.get("groq_stt_model", "whisper-large-v3")),
+        "file": audio_file,
+        "language": language,
+    }
+    prompt = str(cfg.get("stt_vocab_prompt", "") or "").strip()
+    if prompt:
+        kwargs["prompt"] = prompt
+    try:
+        resp = client.audio.transcriptions.create(**kwargs)
+    except TypeError:
+        # An older SDK build that doesn't accept `prompt` - retry plainly
+        # rather than losing the utterance.
+        kwargs.pop("prompt", None)
+        audio_file.seek(0)
+        resp = client.audio.transcriptions.create(**kwargs)
     text = getattr(resp, "text", None)
     if text is None and isinstance(resp, dict):
         text = resp.get("text")
@@ -275,7 +485,7 @@ def stt_status():
     """Human line describing the speech-to-text engine that will be used."""
     cfg = jarvis_config.load_config()
     engine = str(cfg.get("stt_engine", "auto")).lower()
-    model = str(cfg.get("groq_stt_model", "whisper-large-v3-turbo"))
+    model = str(cfg.get("groq_stt_model", "whisper-large-v3"))
     if engine == "groq":
         return f"groq {model} (fast, online)" if _groq_key() else "groq requested but no Groq key - google fallback"
     if engine == "whisper":
@@ -467,6 +677,7 @@ def listen_loop(no_speak=False):
     print("    - 'Remind me to call Mom tomorrow at 6 pm' / 'Morning briefing'")
     print("    - 'Type hello world' / 'Play music' / 'What do you think about...?'")
     print("    - 'Search for electric cars and tell me' / 'Read this website'")
+    print("    - 'Show me the job openings in Indianapolis in bioinformatics'")
     print("    - 'Create a python file called hello that prints the date'")
     print("    - 'Run it' / 'Fix it' / 'What are you doing' (background tasks)")
     print("    - 'Show yourself' (opens the live HUD) / 'Open browser'")

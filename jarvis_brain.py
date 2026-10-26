@@ -27,6 +27,19 @@ _client_provider = None
 _history = None  # loaded lazily from disk
 _cooldown_until = 0.0
 
+# v4.1: models that answered "model_not_found" (404) are latched off for
+# the rest of the session. v4.0 retried llama-3.1-8b-instant on EVERY
+# message - Groq no longer offers it on Umesh's key, so every chat paid a
+# failed 404 call (latency + terminal spam) before a deep model answered.
+_dead_models = set()
+
+# Model names known-dead on Groq for this account. A config that still
+# carries one of these (e.g. a config.json saved by the v4 installer with
+# fast_model "llama-3.1-8b-instant") is treated as "unset" and migrated
+# to DEFAULT_FAST_MODEL automatically.
+_DEAD_MODEL_NAMES = {"llama-3.1-8b-instant"}
+DEFAULT_FAST_MODEL = "openai/gpt-oss-20b"
+
 SYSTEM_PROMPT_TEMPLATE = """You are Jarvis, {owner}'s friendly companion and thinking partner, living on his Mac and talking with him face to face, in voice.
 Be warm, direct, and conversational - like a smart friend sitting next to him, not a corporate help desk. Address him by name ({owner}) naturally, sometimes - not in every sentence.
 What you know about him: {personal_context} Use this when it is relevant - talk about HIS real situation, his work and his search, instead of giving generic advice that could be for anyone.
@@ -200,6 +213,27 @@ def _get_client(provider):
     return _client
 
 
+def _is_model_not_found(e):
+    """True when the provider says this model does not exist (404)."""
+    status = getattr(e, "status_code", None)
+    if status == 404:
+        return True
+    s = str(e).lower()
+    return "model_not_found" in s or "does not exist" in s
+
+
+def _resolve_fast_model(cfg):
+    """
+    The configured fast model, with the v4.1 migration: a saved value
+    that is known-dead on this account (llama-3.1-8b-instant) counts as
+    unset, so an old config.json picks up the new default automatically.
+    """
+    fast = str(cfg.get("fast_model") or "").strip()
+    if not fast or fast in _DEAD_MODEL_NAMES:
+        return DEFAULT_FAST_MODEL
+    return fast
+
+
 def _models_for(provider, tier="deep"):
     """
     v4 two-speed brain. Groq has two tiers:
@@ -208,15 +242,22 @@ def _models_for(provider, tier="deep"):
     - "deep": the existing groq_models list (reasoning models) - used for
       advisory / deep questions and by helper modules (summaries, code).
     OpenAI is a single-model provider and ignores the tier.
+    Models latched as not-found this session are skipped (v4.1) - unless
+    skipping would leave no model at all, in which case the original
+    list is kept (better to try than to be mute).
     """
     cfg = jarvis_config.load_config()
     if provider == "groq":
-        deep = [str(m) for m in (cfg.get("groq_models") or [])] or ["openai/gpt-oss-20b"]
+        deep = [str(m) for m in (cfg.get("groq_models") or [])] or [DEFAULT_FAST_MODEL]
         if tier == "fast":
-            fast = str(cfg.get("fast_model") or "llama-3.1-8b-instant")
-            return [fast] + [m for m in deep if m != fast]
-        return deep
-    return [str(cfg.get("openai_model") or "gpt-4.1-mini")]
+            fast = _resolve_fast_model(cfg)
+            models = [fast] + [m for m in deep if m != fast]
+        else:
+            models = deep
+    else:
+        models = [str(cfg.get("openai_model") or "gpt-4.1-mini")]
+    alive = [m for m in models if m not in _dead_models]
+    return alive or models
 
 
 def _system_prompt():
@@ -256,6 +297,14 @@ def _complete_msgs(msgs, tier="fast", max_tokens=450):
                     _set_cooldown(wait_sec)
                     print(f"[Rate-limit triggered: cooldown for {wait_sec}s]")
                     return None
+                if _is_model_not_found(e):
+                    # v4.1 latch: never pay for this dead model again
+                    # this session; say so exactly once, then stay quiet.
+                    if model not in _dead_models:
+                        _dead_models.add(model)
+                        print(f"[Model {model} not available on this account "
+                              f"- skipping it from now on]")
+                    continue
                 print(f"[Model {model} on {provider} failed: {e}]")
     return None
 

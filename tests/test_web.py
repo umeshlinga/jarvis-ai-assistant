@@ -102,6 +102,98 @@ def main():
     check("read falls back to raw sentences honestly",
           "thinking brain isn't available" in r and "Scientists announced a new result today" in r)
 
+    # ---- v4.1: job search parsing (pure - no stubs needed) ----
+    check("job parse: his exact live phrasing",
+          jarvis_web.parse_job_query(
+              "show me the job openings in indianapolis in bioinformatics")
+          == ("bioinformatics", "Indianapolis"))
+    check("job parse: garbled domain word mapped back",
+          jarvis_web.parse_job_query(
+              "show me the job openings having in indianapolis in bighton")
+          == ("bioinformatics", "Indianapolis"))
+    check("job parse: no role -> his default field",
+          jarvis_web.parse_job_query("what are the job openings in indianapolis")
+          == ("bioinformatics", "Indianapolis"))
+    check("job parse: role before the noun",
+          jarvis_web.parse_job_query("bioinformatics jobs in indianapolis")
+          == ("bioinformatics", "Indianapolis"))
+    check("job parse: unknown place accepted, role kept",
+          jarvis_web.parse_job_query("find data science jobs in chicago")
+          == ("data science", "Chicago"))
+    check("job query detector: positives",
+          jarvis_web.is_job_search_query("show me the job openings in indianapolis")
+          and jarvis_web.is_job_search_query("find jobs in indianapolis")
+          and jarvis_web.is_job_search_query("bioinformatics jobs in indianapolis"))
+    check("job query detector: negatives",
+          not jarvis_web.is_job_search_query("explain quantum computing please")
+          and not jarvis_web.is_job_search_query("what time is it"))
+
+    # ---- v4.1: job search DOES the work (DDG + browser stubbed) ----
+    jarvis_web.http_get = lambda url, timeout=10: DDG_HTML
+    opened_urls = []
+    orig_open_url = jarvis_web.open_url
+    jarvis_web.open_url = lambda url: opened_urls.append(url) or True
+    try:
+        r = jarvis_web.job_search(
+            "show me the job openings in indianapolis in bioinformatics")
+        check("job search opens LinkedIn Jobs with keywords + location",
+              opened_urls and "linkedin.com/jobs/search" in opened_urls[0]
+              and "bioinformatics" in opened_urls[0]
+              and "Indianapolis" in opened_urls[0])
+        check("job search speaks the did-the-work prefix",
+              r.startswith("I searched for bioinformatics jobs in Indianapolis "
+                           "and opened LinkedIn Jobs with the live results. "
+                           "Here's what I found:"))
+        check("job search reads the top findings aloud", "First Title" in r)
+
+        def boom2(url, timeout=10):
+            raise RuntimeError("no route to host")
+        jarvis_web.http_get = boom2
+        opened_urls.clear()
+        r = jarvis_web.job_search("find jobs in indianapolis")
+        check("job search: DDG failure still opens browser + honest speech",
+              opened_urls and r.startswith("I searched for bioinformatics jobs "
+                                             "in Indianapolis")
+              and "couldn't read the web results aloud" in r)
+    finally:
+        jarvis_web.open_url = orig_open_url
+        jarvis_web.http_get = lambda url, timeout=10: DDG_HTML
+
+    # ---- v4.1: general topic cleaning + guards ----
+    check("topic: show me", jarvis_web.general_search_topic("show me electric cars")
+          == "electric cars")
+    check("topic: find out", jarvis_web.general_search_topic("find out about black holes")
+          == "black holes")
+    check("topic: what are the", jarvis_web.general_search_topic(
+        "what are the latest iphone prices") == "latest iphone prices")
+    check("topic: bare search", jarvis_web.general_search_topic("search electric cars")
+          == "electric cars")
+    check("topic: look up", "moon landing" in (
+        jarvis_web.general_search_topic("look up the moon landing") or ""))
+    check("topic guard: file finds keep their route",
+          jarvis_web.general_search_topic("search for the file report.pdf") is None)
+    check("topic guard: market questions keep the market module",
+          jarvis_web.general_search_topic("show me the stock price") is None)
+    check("topic: plain chat is not a search",
+          jarvis_web.general_search_topic("explain quantum computing please") is None)
+
+    # ---- v4.1: search_and_tell can open the results page ----
+    jarvis_web.open_url = lambda url: opened_urls.append(url) or True
+    opened_urls.clear()
+    try:
+        r = jarvis_web.search_and_tell("electric cars", open_results=True)
+        check("search open_results opens the DDG page",
+              opened_urls and "duckduckgo.com" in opened_urls[0])
+        check("search open_results mentions the opened page",
+              "opened the results page in your browser" in r)
+        jarvis_web.http_get = boom2
+        r = jarvis_web.search_and_tell("electric cars", open_results=True)
+        check("search open_results: fetch failure honest, page still opened",
+              "opened the search results" in r and "on your screen" in r)
+    finally:
+        jarvis_web.open_url = orig_open_url
+        jarvis_web.http_get = lambda url, timeout=10: DDG_HTML
+
     print(f"\n{len(PASSED)}/{len(PASSED)} web tests passed.")
 
 

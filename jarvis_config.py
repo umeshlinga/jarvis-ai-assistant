@@ -41,12 +41,36 @@ DEFAULTS = {
     "suggestions": True,
     # ---- v4 "Supercomputer" ----
     # Groq Whisper speech-to-text (uses the same Groq key as the brain).
-    # whisper-large-v3-turbo is fast and far better with Indian-English
-    # accents than the free Google recognizer.
-    "groq_stt_model": "whisper-large-v3-turbo",
+    # v4.1: whisper-large-v3 (full model) - accuracy over the turbo
+    # variant; it is still fast on Groq and hears Indian-English domain
+    # words (bioinformatics, Indianapolis...) far better.
+    "groq_stt_model": "whisper-large-v3",
+    # Vocabulary hint sent to Whisper: biases transcription towards the
+    # words Umesh actually says (names, his field, his apps). Edit it in
+    # ~/.openjarvis/config.json to teach the ears new words.
+    "stt_vocab_prompt": (
+        "Jarvis. Umesh Linga, bioinformatics, Indianapolis, LinkedIn, "
+        "resume, GitHub, VS Code, WhatsApp, iMessage, screenshot, reminder."
+    ),
     # Fast everyday chat model (Groq). Advisory/deep questions use the
-    # deep tier (groq_models above) instead.
-    "fast_model": "llama-3.1-8b-instant",
+    # deep tier (groq_models above) instead. v4.1: gpt-oss-20b - Groq no
+    # longer offers llama-3.1-8b-instant on this account (live 404s), and
+    # gpt-oss-20b is already proven on his key as the deep tier's first
+    # model. A saved "llama-3.1-8b-instant" value is auto-migrated by
+    # jarvis_brain (treated as unset).
+    "fast_model": "openai/gpt-oss-20b",
+    # ---- v4.1 human voice (neural text-to-speech) ----
+    # tts_engine: "auto" (Groq neural -> OpenAI neural -> macOS say) |
+    # "groq" | "openai" | "say" (force the built-in Mac voice).
+    # Neural voices need internet; offline Jarvis falls back to `say`.
+    "tts_engine": "auto",
+    # Groq neural voice (Orpheus, via the same Groq key as the brain).
+    "groq_tts_model": "canopylabs/orpheus-v1-english",
+    # Orpheus voices: daniel, austin, troy (male); hannah, autumn, diana (female).
+    "tts_voice": "daniel",
+    # OpenAI neural fallback (only when an OpenAI key is configured).
+    "openai_tts_model": "gpt-4o-mini-tts",
+    "openai_tts_voice": "nova",
     # Personal context for the brain's system prompt. Local only, in
     # ~/.openjarvis/config.json - edit it there to change what Jarvis
     # knows about you.
