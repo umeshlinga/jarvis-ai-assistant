@@ -21,6 +21,9 @@ adds v3:
 - Brightness keys, Wi-Fi on/off, Do Not Disturb via a user Shortcut.
 - Morning briefing builder.
 
+v5 adds: read local files aloud (jarvis_read), "switch to <app>",
+and best-effort "click <name>" via System Events UI search.
+
 EVERYTHING mac-only is guarded: on a system without mdfind / osascript /
 pmset the actions return a clean honest sentence, never a traceback.
 All system calls go through _open / _osa / _run / _run_input so tests can
@@ -718,6 +721,43 @@ def _key(code):
     return True
 
 
+def click_named(name):
+    """
+    v5: best-effort "click <name>" - System Events searches the front
+    app's front window for a UI element whose name or title matches and
+    clicks the first hit. Needs macOS Accessibility permission for
+    Terminal; any failure is an honest sentence, never a fake success.
+    """
+    script = (
+        f'set targetName to "{_asq(name)}"\n'
+        'tell application "System Events"\n'
+        'tell (first application process whose frontmost is true)\n'
+        'repeat with el in entire contents of front window\n'
+        'try\n'
+        'if (name of el) is targetName then\n'
+        'click el\n'
+        'return "clicked"\n'
+        'end if\n'
+        'end try\n'
+        'try\n'
+        'if (title of el) is targetName then\n'
+        'click el\n'
+        'return "clicked"\n'
+        'end if\n'
+        'end try\n'
+        'end repeat\n'
+        'end tell\n'
+        'end tell\n'
+        'return "notfound"'
+    )
+    rc, out = _osa_run(script)
+    if rc == 0 and (out or "").strip() == "clicked":
+        return f"Clicked {name}."
+    return (f"I couldn't click {name} - it isn't visible on screen, or Terminal "
+            f"needs Accessibility permission (System Settings > Privacy & "
+            f"Security > Accessibility). Nothing was clicked.")
+
+
 def _media_app():
     return "Spotify" if find_app("spotify") else "Music"
 
@@ -822,6 +862,34 @@ def _try_action_impl(q, confirm=None):
         return jarvis_code.open_last_code()
     if q_clean in ("fix it", "fix the error", "fix the code", "fix that error", "fix that"):
         return jarvis_code.fix_last_code()
+
+    # v5: read a local file aloud (jarvis_read) - "read my resume",
+    # "read report.pdf", "what's in notes.txt", "open and read X",
+    # "read more" to continue. Guards keep the web reader's phrasings
+    # ("read about ...", "read bbc dot com", "read this website ...")
+    # and the clipboard/mail routes flowing to their own blocks below.
+    import jarvis_read
+    if q_clean in ("read more", "continue reading", "read on", "keep reading"):
+        return jarvis_read.read_more()
+    m = re.match(r"(?:what's|what is) in (?:the )?(?:file )?(.+)$", q_clean)
+    if m and "clipboard" not in q_clean:
+        return jarvis_read.read_file(m.group(1).strip())
+    m = re.match(r"open and read (?:the )?(?:file )?(.+)$", q_clean)
+    if m:
+        return jarvis_read.read_file(m.group(1).strip(), open_too=True)
+    m = re.match(r"read (?:my |the file |file )(.+)$", q_clean)
+    if m and not any(bad in m.group(1) for bad in
+                     ("clipboard", "email", "screen", "selection")):
+        return jarvis_read.read_file(m.group(1).strip())
+    m = re.match(r"read (.+\.(?:txt|md|py|csv|json|log|docx|pdf))$", q_clean)
+    if m:
+        return jarvis_read.read_file(m.group(1).strip())
+    m = re.match(r"read ([a-z0-9_\- ]+)$", q_clean)
+    if m and " dot " not in q_clean and not q_clean.startswith(("read about", "read this")):
+        _read_name = m.group(1).strip()
+        if _read_name and search_files(_read_name):
+            return jarvis_read.read_file(_read_name)
+        # No such file: fall through - the web routes / brain may mean it.
 
     # Browser brain (jarvis_web)
     import jarvis_web
@@ -956,6 +1024,19 @@ def _try_action_impl(q, confirm=None):
     if q_clean in ("switch app", "switch apps", "switch window"):
         _osa('tell application "System Events" to key code 48 using command down')
         return "Switched app."
+    # v5: "switch to <app>" activates that app by name.
+    m = re.match(r"switch to\s+(.+)$", q_clean)
+    if m:
+        _app_name = m.group(1).strip()
+        _app = find_app(_app_name) or ALIASES.get(_app_name, _app_name.title())
+        if _osa(f'tell application "{_app}" to activate'):
+            return f"Switched to {_app}."
+        return (f"I couldn't switch to {_app} - it may not be installed, "
+                f"or macOS refused the switch.")
+    # v5: "click <name>" - best-effort click on a named UI element.
+    m = re.match(r"click\s+(?:on\s+)?(.+)$", q_clean)
+    if m:
+        return click_named(m.group(1).strip())
     cmd_keys = {
         "copy that": ("c", "Copied."), "copy this": ("c", "Copied."),
         "paste": ("v", "Pasted."), "paste that": ("v", "Pasted."),

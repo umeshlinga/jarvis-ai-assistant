@@ -1,1 +1,39 @@
-{"code_dir":"~/jarvis-projects","fast_model":"openai/gpt-oss-20b","groq_base_url":"https://api.groq.com/openai/v1","groq_models":["openai/gpt-oss-20b","llama-3.3-70b-versatile","qwen/qwen3.8-27b"],"groq_stt_model":"whisper-large-v3","groq_tts_model":"canopylabs/orpheus-v1-english","hud_auto_open":true,"hud_port":8765,"max_history_turns":30,"openai_base_url":"https://api.openai.com/v1","openai_model":"gpt-4.1-mini","openai_tts_model":"gpt-4o-mini-tts","openai_tts_voice":"nova","owner_name":"Umesh","personal_context":"Umesh Linga, bioinformatician in Indianapolis, 5+ years experience (Cipla, Indiana University, Karyon Bio), currently job searching in bioinformatics/data/AI roles, on F-1 STEM OPT.","provider_order":["groq","openai"],"speech_rate":185,"stt_engine":"auto","stt_language":"en-IN","stt_vocab_prompt":"Jarvis. Umesh Linga, bioinformatics, Indianapolis, LinkedIn, resume, GitHub, VS Code, WhatsApp, iMessage, screenshot, reminder.","suggestions":true,"tts_engine":"auto","tts_voice":"daniel","voice":"Samantha","wake_word":"jarvis","whisper_model":"base.en"}
+{
+  "code_dir": "~/jarvis-projects",
+  "fast_model": "openai/gpt-oss-20b",
+  "groq_base_url": "https://api.groq.com/openai/v1",
+  "groq_models": [
+    "openai/gpt-oss-20b",
+    "llama-3.3-70b-versatile",
+    "qwen/qwen3.8-27b"
+  ],
+  "groq_stt_model": "whisper-large-v3",
+  "groq_tts_model": "canopylabs/orpheus-v1-english",
+  "hud_auto_open": true,
+  "hud_port": 8765,
+  "max_history_turns": 30,
+  "openai_base_url": "https://api.openai.com/v1",
+  "openai_model": "gpt-4.1-mini",
+  "openai_tts_model": "gpt-4o-mini-tts",
+  "openai_tts_voice": "nova",
+  "owner_name": "Umesh",
+  "personal_context": "Umesh Linga, bioinformatician in Indianapolis, 5+ years experience (Cipla, Indiana University, Karyon Bio), currently job searching in bioinformatics/data/AI roles, on F-1 STEM OPT.",
+  "proactive_enabled": true,
+  "proactive_interval_min": 30,
+  "proactive_jobs": true,
+  "provider_order": [
+    "groq",
+    "openai"
+  ],
+  "speak_actions": false,
+  "speech_rate": 185,
+  "stt_engine": "auto",
+  "stt_language": "en-IN",
+  "stt_vocab_prompt": "Jarvis. Umesh Linga, bioinformatics, Indianapolis, LinkedIn, resume, GitHub, VS Code, WhatsApp, iMessage, screenshot, reminder.",
+  "suggestions": true,
+  "tts_engine": "auto",
+  "tts_voice": "daniel",
+  "voice": "Samantha",
+  "wake_word": "jarvis",
+  "whisper_model": "base.en"
+}

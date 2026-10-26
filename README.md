@@ -1,8 +1,26 @@
-# Jarvis AI Assistant — Advanced v4.1 "Supercomputer" (M1)
+# Jarvis AI Assistant — Advanced v5 "Autonomous Butler" (M1)
 
 > Built on the original jarvis-ai-assistant by saipradeep77964 (github.com/saipradeep77964/jarvis-ai-assistant), extended by Umesh Linga.
 
 A voice-controlled AI assistant for **MacBook M1 / Apple Silicon (arm64)**, rebuilt and extended from the original project above. The original is **not** Umesh's invention — this version keeps its brain / actions / market design and adds the fixes and features below.
+
+---
+
+## What's new in v5 — "Autonomous Butler"
+
+v5 is built from Umesh's live v4.1 run, in his own words: *"If I say stop it's not stopping — it keeps on reading… it's blabbering… if I say open, it should open normally and NOT speak… in the backend it should run automatically; if something is important it should remind me… you should read everything in my laptop… What's the time? — 'It's six forty-five.' That length."* Four changes:
+
+**1. He stops when you say stop (barge-in).** Playback is now a tracked, killable process. While Jarvis talks, a second ear listens in short windows for stop words only — **"stop"**, **"quiet"**, **"shut up"**, **"enough"**, **"Jarvis, stop"** — and cuts him off mid-sentence, then goes back to listening. An echo guard stops him mistaking his *own* voice (heard through the speakers) for you. Saying just "stop" as your next command is also understood silently — no reply, no lecture. (Ctrl+C still stops Jarvis entirely; the keyboard isn't watched while he listens.)
+
+**2. Silent actions, short answers (speak policy).** Pure acknowledgements — "Opening Chrome.", "Volume set to 50 percent.", "Screenshot saved…", "Timer set…" — are **printed and shown on the HUD, never spoken**. Jarvis speaks only when he has something to tell you: answers, results, problems, questions. And spoken answers are trimmed: chat to the first 1–2 sentences (~55 words), information routes (search, file reads, market, task updates) to ~110 words; the full text is always on screen and on the HUD. The brain's default is now **one or two short sentences** — "What's the time?" → "It's six forty-five." Config `speak_actions: true` restores the old speak-everything behaviour.
+
+**3. A proactive butler.** A background thread (config `proactive_enabled`, checks every `proactive_interval_min`, default 30) watches your **Reminders** (due within 30 minutes, or overdue), **Calendar** (events starting within 30 minutes), **battery** (≤ 20% and not charging), offers your **morning briefing once a day** after 7 AM, and — once a morning, config `proactive_jobs` — counts fresh web results for *bioinformatics jobs in Indianapolis* and asks: *"Umesh, I found some openings like this. Want me to open them?"* Alerts are **spoken once, between listen cycles** — never over your voice. Suggestions are questions: say **yes / open it** and he does it (the job suggestion opens the real LinkedIn Jobs results), say **no / leave it** and he drops it silently. Anything else and the suggestion simply expires. Each item fires once per day — no nagging.
+
+**4. He reads your files.** **"Read my resume"**, **"read report.pdf"**, **"what's in notes.txt"**, **"open and read contract.docx"** — Jarvis finds the file, tells you its name and size, and reads a 3–4 sentence summary aloud. **"Read more"** speaks the actual text, a page (~110 words) at a time, remembering where he stopped. Formats: `.txt .md .py .csv .json .log` directly, `.docx` from its XML, `.pdf` via the free **poppler** tool (`pdftotext`) — without poppler he opens the PDF and tells you honestly that reading it aloud needs `brew install poppler`. Other formats are opened on screen with the same honesty. He never invents file content.
+
+Plus small GUI verbs: **"scroll up / scroll down"**, **"press enter / tab / escape"**, **"switch to <app>"**, and best-effort **"click <name>"** (System Events searches the front window for a UI element with that name/title — needs Accessibility permission for Terminal, and says so when it can't).
+
+**New config keys (v5):** `speak_actions` — false · `proactive_enabled` — true · `proactive_interval_min` — 30 · `proactive_jobs` — true.
 
 ---
 
@@ -66,7 +84,7 @@ His first voice run worked, but every sentence was slow: the offline Whisper loa
 | **Silence detection** | Recording no longer runs a fixed 6 seconds: it stops ~1 second after you stop speaking, so replies start much sooner |
 | **Accent accuracy** | Google recognition now uses `stt_language` (default **en-IN**, better for Indian-English speech); change it in `~/.openjarvis/config.json` |
 
-To update an installed copy: stop Jarvis with **Ctrl+C**, then `git pull`, then `./jarvis` again. No reinstall needed. To STOP Jarvis in voice mode at any time: press **Ctrl+C**, or say **"Jarvis, goodbye"** (typing `quit` does not work in voice mode — he isn't reading the keyboard while listening).
+To update an installed copy: stop Jarvis with **Ctrl+C**, then `git pull`, then `./jarvis` again. No reinstall needed. To STOP Jarvis in voice mode at any time: press **Ctrl+C** (stops Jarvis entirely), or say **"Jarvis, goodbye"** (typing `quit` does not work in voice mode — he isn't reading the keyboard while listening). To stop only his *speech* mid-sentence (v5), say **"stop"** / **"Jarvis, stop"** — he cuts off and keeps listening.
 
 ---
 
@@ -310,6 +328,10 @@ Files Jarvis keeps in `~/.openjarvis/`: `config.json`, `contacts.json`, `free.ke
 - **Calls** use FaceTime on the Mac (there is no cellular calling) — they need the contact's number or email.
 - **Offline thinking:** Jarvis's opinions and open-ended explanations need the online brain (Groq / OpenAI). Offline he runs commands and local facts, and says so for anything else — he doesn't fake thinking offline.
 - **Reminders / Calendar parsing** is simple by design (today / tomorrow + `6 pm` / `18:30`); anything fancier loses the due date rather than being mis-dated.
+- **Barge-in (v5) is best-effort hearing, not magic.** The stop ear listens while Jarvis talks, but in a noisy room — or with the speakers loud — he may miss a quiet "stop", and the echo guard (which stops him obeying his *own* voice) may rarely swallow a real one. Shout it once, plainly: "Jarvis, stop." If the mic can't open alongside playback on some setup, the stop ear disables itself silently for the session and everything else keeps working.
+- **The butler (v5) only sees what's on this Mac**: Apple Reminders, Apple Calendar, and the battery — plus one morning web count for the job suggestion. He can't see Google Calendar, your phone, or your email, and alerts wait for a gap between listen cycles, so one can land a few seconds after it triggers. Nothing is ever repeated the same day.
+- **"Click <name>" (v5) is best-effort** and needs Accessibility permission for Terminal (System Settings → Privacy & Security → Accessibility). It clicks the first visible UI element whose name or title matches in the front app's front window; hidden menus and canvas-drawn apps (games, some Electron screens) may not expose elements at all — then he says he couldn't, and clicks nothing.
+- **Reading PDFs aloud (v5) needs poppler** (`brew install poppler` provides `pdftotext`). Without it Jarvis opens PDFs but won't pretend to read them. Scanned-image PDFs have no text layer even with poppler — he'll report no readable text rather than inventing content.
 
 ## Tests
 
@@ -321,4 +343,6 @@ python3 tests/test_hud.py         # v4 HUD server on an ephemeral port (localhos
 python3 tests/test_web.py         # v4 web search/read + v4.1 job search & topic cleaning (HTTP layer stubbed)
 python3 tests/test_code.py        # v4 voice coding in a temp sandbox (LLM stubbed)
 python3 tests/test_tasks.py       # v4 background-task manager + announcer
+python3 tests/test_read.py        # v5 read-anything: txt/docx extraction, pdf honesty, read-more paging, routes (stubbed search/brain)
+python3 tests/test_butler.py      # v5 proactive butler: alerts once/day, suggestion yes/no/expiry (injected providers + clock)
 ```

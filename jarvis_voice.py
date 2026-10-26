@@ -19,6 +19,13 @@ the same Groq key as the brain/ears (OpenAI TTS as second choice) -
 played with afplay; macOS `say` (voice + rate from config) is the
 always-available fallback and the offline voice. On non-Mac systems it
 prints only (pyttsx3 is an optional extra, never a requirement).
+
+v5 "Autonomous Butler": playback is killable (stop_speaking) and a
+stop-listener thread watches the mic while Jarvis talks, so "Jarvis,
+stop" cuts him off mid-sentence; the speak policy (present_reply)
+keeps pure action acknowledgements silent and trims spoken answers;
+the proactive butler (jarvis_butler) delivers queued alerts between
+listen cycles.
 """
 
 import io
@@ -27,9 +34,11 @@ import re
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 import wave
 
+import jarvis_butler
 import jarvis_config
 import jarvis_hud
 import jarvis_tasks
@@ -52,6 +61,54 @@ _groq_stt_broken_until = 0.0
 # of the session. No retry spam, and a reply is never blocked by TTS.
 _tts_neural_broken = False
 
+# ---------------------------------------------------------------------------
+# v5: killable playback + barge-in ("Jarvis, stop")
+# ---------------------------------------------------------------------------
+# The live audio player (an afplay / say subprocess, or a pyttsx3 engine)
+# is tracked so stop_speaking() can kill it mid-sentence. A stop-listener
+# thread watches the mic WHILE Jarvis talks and acts on stop words only.
+_current_player = None            # Popen handle or pyttsx3 engine
+_player_lock = threading.Lock()
+_stop_event = threading.Event()   # set by stop_speaking(); aborts chunk queues
+_speech_active = threading.Event()  # set while audio is actually playing
+_speech_lock = threading.Lock()   # serialise concurrent speak() calls
+_current_spoken_text = ""         # what Jarvis is saying (echo guard input)
+_stop_listen_enabled = False      # listen_loop turns the barge-in ear on
+_stop_listener_running = False
+_stop_listener_disabled = False   # session latch: mic can't open alongside
+
+
+def _register_player(player):
+    global _current_player
+    with _player_lock:
+        _current_player = player
+
+
+def _clear_player(player=None):
+    global _current_player
+    with _player_lock:
+        if player is None or _current_player is player:
+            _current_player = None
+
+
+def stop_speaking():
+    """
+    Stop whatever Jarvis is saying, RIGHT NOW: set the stop flag (queued
+    speech chunks abort) and kill the live player. Safe to call any time.
+    """
+    _stop_event.set()
+    with _player_lock:
+        player = _current_player
+    if player is not None:
+        try:
+            if hasattr(player, "terminate"):       # subprocess (afplay / say)
+                player.terminate()
+            elif hasattr(player, "stop"):          # pyttsx3 engine
+                player.stop()
+        except Exception:
+            pass
+    _hud_emit("state", "stopped")
+
 
 def _hud_emit(kind, text):
     """Feed the live HUD (no-op cost when the server isn't running)."""
@@ -65,11 +122,135 @@ def _register_announcer(no_speak=False):
     """Background tasks speak their updates through this announcer."""
     def _announce(msg):
         _hud_emit("task", msg)
-        speak(msg, no_speak=no_speak)
+        # v5: announcements obey the speak policy too (printed in full,
+        # spoken trimmed) - source "task" always deserves a voice.
+        present_reply(msg, no_speak=no_speak, source="task")
     try:
         jarvis_tasks.set_announcer(_announce)
     except Exception:
         pass
+
+
+# ---------------------------------------------------------------------------
+# v5: stop-word spotting (barge-in while Jarvis is talking)
+# ---------------------------------------------------------------------------
+
+_STOP_PHRASES = ("stop talking", "jarvis stop", "shut up", "stop", "quiet", "enough")
+# An utterance made ONLY of these words is a pure stop command, not a
+# request like "stop the music" (a real command that must keep working).
+_STOP_ONLY_WORDS = {"stop", "quiet", "shut", "up", "enough", "talking",
+                    "jarvis", "please", "now"}
+
+
+def _is_stop_command(transcript, spoken_text=""):
+    """
+    True when a mic window holds a genuine stop command. Echo guard:
+    Jarvis hears his own voice through the speakers, so a window that
+    mostly repeats the text currently being spoken is NOT a command -
+    unless the window is basically only the stop word itself.
+    """
+    if not transcript:
+        return False
+    words = re.findall(r"[a-z']+", transcript.lower())
+    if not words:
+        return False
+    joined = " " + " ".join(words) + " "
+    if not any((" " + p + " ") in joined for p in _STOP_PHRASES):
+        return False
+    if len(words) <= 3:
+        return True  # basically just the stop word - that's him, not echo
+    # A window DOMINATED by stop tokens is him shouting over Jarvis,
+    # even when the spoken sentence happens to contain the word "stop".
+    stop_tokens = {"stop", "quiet", "shut", "up", "enough", "talking", "jarvis"}
+    if sum(1 for w in words if w in stop_tokens) / len(words) >= 0.5:
+        return True
+    spoken_words = set(re.findall(r"[a-z']+", (spoken_text or "").lower()))
+    if not spoken_words:
+        return True
+    overlap = sum(1 for w in words if w in spoken_words) / len(words)
+    return overlap < 0.6
+
+
+def _is_pure_stop(text):
+    """True when a fresh utterance is ONLY a stop word ('stop', 'shut up')."""
+    words = re.findall(r"[a-z']+", (text or "").lower())
+    if not words:
+        return False
+    return all(w in _STOP_ONLY_WORDS for w in words) and any(
+        w in ("stop", "quiet", "enough") or words == ["shut", "up"] for w in words)
+
+
+def _record_stop_window(seconds=1.1):
+    """
+    Record one short raw mic window for the stop listener (no VAD - a
+    fixed ~1.1s slice). Raises on any problem (no mic, device busy,
+    sounddevice missing) so the listener can disable itself silently.
+    """
+    import numpy as np
+    import sounddevice as sd
+
+    frames = int(SAMPLE_RATE * seconds)
+    data = sd.rec(frames, samplerate=SAMPLE_RATE, channels=CHANNELS, dtype="int16")
+    sd.wait()
+    audio = np.asarray(data, dtype="int16").reshape(-1)
+    buf = io.BytesIO()
+    with wave.open(buf, "wb") as wf:
+        wf.setnchannels(CHANNELS)
+        wf.setsampwidth(2)  # int16
+        wf.setframerate(SAMPLE_RATE)
+        wf.writeframes(audio.tobytes())
+    buf.seek(0)
+    return buf
+
+
+def _transcribe_stop_window(wav_bytes):
+    """Fastest available transcription, for stop-word spotting only."""
+    if _groq_key():
+        try:
+            return _transcribe_groq(wav_bytes)
+        except Exception:
+            pass
+    try:
+        return _transcribe_google(wav_bytes)
+    except Exception:
+        return None
+
+
+def _stop_listener_loop():
+    """
+    While Jarvis speaks, watch the mic in ~1.1s windows; on a genuine
+    stop word, kill the speech and go back to listening. If the mic
+    can't be opened alongside playback, disable for the session,
+    silently - barge-in is a bonus, never a crash.
+    """
+    global _stop_listener_running, _stop_listener_disabled
+    try:
+        while _speech_active.is_set() and not _stop_event.is_set():
+            try:
+                wav = _record_stop_window(1.1)
+            except Exception:
+                _stop_listener_disabled = True
+                return
+            text = _transcribe_stop_window(wav)
+            if text and _is_stop_command(text, _current_spoken_text):
+                stop_speaking()
+                print("\n[Heard you - speech stopped.]")
+                _hud_emit("state", "listening")
+                return
+    finally:
+        _stop_listener_running = False
+
+
+def _maybe_start_stop_listener():
+    global _stop_listener_running
+    if not _stop_listen_enabled or _stop_listener_disabled or _stop_listener_running:
+        return
+    _stop_listener_running = True
+    try:
+        threading.Thread(target=_stop_listener_loop, name="jarvis-stop-ear",
+                         daemon=True).start()
+    except Exception:
+        _stop_listener_running = False
 
 
 # --------------------------------------------------------------------------
@@ -163,10 +344,22 @@ def _synth_chunk(client, model, voice_name, text):
 
 
 def _play_audio_file(path):
-    """Play a WAV file (macOS afplay). Raises anywhere else / on error."""
+    """
+    Play a WAV file (macOS afplay). Raises anywhere else / on error.
+    v5: runs as a tracked Popen so stop_speaking() can kill playback
+    mid-chunk; being stopped is NOT an error.
+    """
     if sys.platform != "darwin":
         raise RuntimeError("afplay is only available on macOS")
-    subprocess.run(["afplay", path], check=True)
+    proc = subprocess.Popen(["afplay", path],
+                            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    _register_player(proc)
+    try:
+        rc = proc.wait()
+    finally:
+        _clear_player(proc)
+    if rc != 0 and not _stop_event.is_set():
+        raise RuntimeError(f"afplay exited with status {rc}")
 
 
 def _tts_attempts():
@@ -208,6 +401,8 @@ def _speak_neural(text):
         try:
             client = _tts_client(provider)
             for chunk in chunk_text(text, limit=limit):
+                if _stop_event.is_set():
+                    return True  # v5: he said stop - abort the queue quietly
                 data = _synth_chunk(client, model, voice_name, chunk)
                 with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as tf:
                     tmp_path = tf.name
@@ -220,6 +415,8 @@ def _speak_neural(text):
                     except Exception:
                         pass
                     tmp_path = None
+                if _stop_event.is_set():
+                    return True  # stopped mid-reply: handled, not a failure
             return True
         except Exception as e:
             last_error = e
@@ -236,21 +433,35 @@ def _speak_neural(text):
 
 
 def _speak_legacy(text):
-    """The v4 voice path: macOS `say` on a Mac, else optional pyttsx3."""
+    """
+    The v4 voice path: macOS `say` on a Mac, else optional pyttsx3.
+    v5: both run as tracked players so stop_speaking() can cut them off.
+    """
     if sys.platform == "darwin":
         cfg = jarvis_config.load_config()
         voice = str(cfg.get("voice", "Samantha"))
         rate = str(cfg.get("speech_rate", 185))
         try:
-            subprocess.run(["say", "-v", voice, "-r", rate, text])
+            proc = subprocess.Popen(["say", "-v", voice, "-r", rate, text],
+                                    stdout=subprocess.DEVNULL,
+                                    stderr=subprocess.DEVNULL)
+            _register_player(proc)
+            try:
+                proc.wait()
+            finally:
+                _clear_player(proc)
             return
         except Exception:
             pass
     try:
         import pyttsx3  # optional dependency (requirements-optional.txt)
         engine = pyttsx3.init()
-        engine.say(text)
-        engine.runAndWait()
+        _register_player(engine)
+        try:
+            engine.say(text)
+            engine.runAndWait()
+        finally:
+            _clear_player(engine)
     except Exception:
         pass
 
@@ -271,10 +482,38 @@ def tts_status():
     return say_desc + " - no neural voice key configured"
 
 
+def _speak_audio(text):
+    """
+    The audio half of a reply: neural human voice first (v4.1), macOS
+    `say` as fallback. v5: tracked + stoppable - the stop flag is reset
+    for each new utterance, the stop listener watches while audio plays,
+    and concurrent speeches serialise on a lock.
+    """
+    global _current_spoken_text
+    if not text:
+        return
+    with _speech_lock:
+        _stop_event.clear()
+        _current_spoken_text = text
+        _speech_active.set()
+        _maybe_start_stop_listener()
+        try:
+            if _speak_neural(text):
+                return
+            if _stop_event.is_set():
+                return  # stopped during synthesis - stay quiet
+            _speak_legacy(text)
+        finally:
+            _speech_active.clear()
+            _current_spoken_text = ""
+            _clear_player()
+
+
 def speak(text, no_speak=False):
     """
-    Print the reply, then speak it: neural human voice first (v4.1),
-    the macOS `say` voice as the always-available fallback.
+    Print the reply, then speak it in full. Kept for direct callers
+    (greetings, --once, --voice-test); the conversation loops use
+    present_reply(), which applies the v5 speak policy.
     """
     if not text:
         return
@@ -283,9 +522,125 @@ def speak(text, no_speak=False):
     print(f"\n[JARVIS]: {text}\n")
     if no_speak:
         return
-    if _speak_neural(text):
-        return
-    _speak_legacy(text)
+    _speak_audio(text)
+
+
+# ---------------------------------------------------------------------------
+# v5 speak policy: silent actions, short answers
+# ---------------------------------------------------------------------------
+# Owner's rule: "If I say open, it should open normally and NOT speak.
+# Speak only when there's something to tell me." Pure acknowledgements
+# are printed + shown on the HUD, never spoken. Information is spoken,
+# trimmed: chat to ~55 words, info routes (search/read/market/tasks)
+# to ~110 words. The FULL text is always printed and on the HUD.
+
+_SILENT_LEADINS = (
+    "opening", "opened", "launching", "volume set", "volume increased",
+    "volume decreased", "system audio muted", "system audio unmuted",
+    "playing", "music paused", "paused", "next song", "previous song",
+    "copied", "moved", "file created", "folder created",
+    "screenshot saved", "screenshot taken", "timer set", "dark mode",
+    "locking your screen", "locked", "typed", "pressed", "note saved",
+    "reminder created", "reminder set", "event added", "switched",
+    "scrolled", "page up", "page down", "brightness", "wi-fi turned",
+    "wifi turned", "closing", "closed", "tab closed", "window closed",
+    "window minimized", "window zoomed", "selected all", "saved",
+    "undone", "pasted", "searching spotify", "searching google for",
+    "starting a facetime", "starting a call", "showing the desktop",
+    "mission control", "playing music",
+)
+
+# Problems and anything needing his answer must ALWAYS reach his ears.
+_SPEAK_MARKERS = (
+    "couldn't", "could not", "can't", "cannot", "needs your confirmation",
+    "are you sure", "say yes", "did not", "didn't", "failed",
+    "unavailable", "isn't available", "not available", "offline",
+    "needs a one-time setup", "error", "sorry",
+)
+
+_LONG_INFO_SOURCES = ("action", "task", "search", "read", "web", "market")
+
+
+def _asks_him(text_low):
+    """True when the reply is a question he is meant to answer."""
+    if "?" not in text_low:
+        return False
+    return any(k in text_low for k in (
+        "want me to", "should i", "do you want", "say yes", "shall i",
+        "would you like"))
+
+
+def classify_reply(text, source=None):
+    """
+    "silent" for pure action acknowledgements; "speak" for information,
+    questions, chat, and anything that went wrong. `source` comes from
+    jarvis_brain.last_reply_source() ("action"/"chat"/"fallback") or
+    the loops ("task").
+    """
+    t = (text or "").strip()
+    if not t:
+        return "silent"
+    if source == "chat":
+        return "speak"  # conversation is the point - but trimmed below
+    low = t.lower()
+    if any(m in low for m in _SPEAK_MARKERS):
+        return "speak"
+    if _asks_him(low):
+        return "speak"
+    if len(t) <= 220 and low.startswith(_SILENT_LEADINS):
+        return "silent"
+    return "speak"
+
+
+def trim_for_speech(text, source=None):
+    """
+    The spoken trim: keep whole sentences up to the word limit for the
+    reply's source (chat ~55 words; info routes ~110). A single huge
+    first sentence is hard-cut. The full text is still printed / on HUD.
+    """
+    t = re.sub(r"\s+", " ", (text or "")).strip()
+    if not t:
+        return t
+    limit = 110 if source in _LONG_INFO_SOURCES else 55
+    words = t.split()
+    if len(words) <= limit:
+        return t
+    sentences = [s.strip() for s in re.split(r"(?<=[.!?])\s+", t) if s.strip()]
+    out, count = [], 0
+    for s in sentences:
+        w = len(s.split())
+        if out and count + w > limit:
+            break
+        if not out and w > limit:
+            return " ".join(words[:limit]) + "…"
+        out.append(s)
+        count += w
+    return " ".join(out) if out else " ".join(words[:limit]) + "…"
+
+
+def present_reply(text, no_speak=False, source=None):
+    """
+    The v5 way loops deliver a reply: ALWAYS print the full text (and
+    feed the HUD), then speak only what deserves a voice - information,
+    trimmed; pure acknowledgements stay silent unless config
+    speak_actions=True restores the old speak-everything behaviour.
+    Returns "silent" or "speak".
+    """
+    if not text:
+        return "silent"
+    kind = classify_reply(text, source)
+    try:
+        if kind == "silent" and jarvis_config.load_config().get("speak_actions", False):
+            kind = "speak"
+    except Exception:
+        pass
+    _hud_emit("reply", text)
+    print(f"\n[JARVIS]: {text}\n")
+    if no_speak or kind == "silent":
+        return kind
+    _hud_emit("state", "speaking")
+    _speak_audio(trim_for_speech(text, source))
+    return kind
 
 
 def mic_available():
@@ -575,26 +930,16 @@ def listen_once(seconds=6):
 
 def startup_greeting():
     """
-    Warm spoken greeting for voice mode: time-of-day hello by name,
-    battery when on battery / low (psutil, guarded), and one suggestion.
-    Returns the greeting text - the caller speaks it in full.
+    v5: the greeting is ONE short line - "Morning, Umesh. I'm
+    listening." Battery warnings and the briefing offer are the
+    butler's job now, delivered as their own alerts, not a monologue.
     """
     import datetime as _dt
     cfg = jarvis_config.load_config()
     owner = cfg.get("owner_name", "Umesh")
     hour = _dt.datetime.now().hour
-    hello = "Good morning" if hour < 12 else "Good afternoon" if hour < 18 else "Good evening"
-    parts = [f"{hello}, {owner}. I'm Jarvis, and I'm listening."]
-    try:
-        import psutil
-        bat = psutil.sensors_battery()
-        if bat is not None and (not bat.power_plugged or bat.percent < 40):
-            parts.append(f"Your battery is at {round(bat.percent)} percent"
-                         + ("" if bat.power_plugged else " and you're on battery power") + ".")
-    except Exception:
-        pass
-    parts.append("Say 'morning briefing' for your day, or just talk to me - ask me anything, or tell me what to open.")
-    return " ".join(parts)
+    hello = "Morning" if hour < 12 else "Afternoon" if hour < 18 else "Evening"
+    return f"{hello}, {owner}. I'm listening."
 
 
 def _strip_wake_word(text):
@@ -606,12 +951,49 @@ def _strip_wake_word(text):
     return q
 
 
+def _start_butler(no_speak=False):
+    """Start the v5 proactive butler for this loop (guarded, idempotent)."""
+    try:
+        jarvis_butler.set_speaker(lambda msg: present_reply(msg, no_speak=no_speak, source="task"))
+        jarvis_butler.start()
+    except Exception:
+        pass
+
+
+def _deliver_butler():
+    try:
+        jarvis_butler.deliver_pending()
+    except Exception:
+        pass
+
+
+def _butler_response(q_clean, no_speak=False):
+    """
+    If a butler suggestion is pending, let it interpret this utterance.
+    Returns True when the utterance was consumed (acted on / dismissed);
+    the caller then skips normal processing for it.
+    """
+    try:
+        handled = jarvis_butler.handle_response(q_clean)
+    except Exception:
+        return False
+    if handled is None:
+        return False
+    outcome, payload = handled
+    if outcome == "acted" and payload:
+        present_reply(payload, no_speak=no_speak, source="action")
+    # "dismissed" is silent by design - he said no, and that's okay.
+    return True
+
+
 def text_loop(no_speak=False):
     print("Text mode - type a command, or 'quit' to exit.")
     _register_announcer(no_speak=no_speak)
+    _start_butler(no_speak=no_speak)
     _maybe_open_hud()
     _hud_emit("state", "idle")
     while True:
+        _deliver_butler()
         try:
             user_input = input("You: ").strip()
         except (KeyboardInterrupt, EOFError):
@@ -623,10 +1005,13 @@ def text_loop(no_speak=False):
             speak("Goodbye!", no_speak=no_speak)
             break
         _hud_emit("heard", user_input)
+        if _butler_response(user_input.lower().strip(" .,!?"), no_speak=no_speak):
+            _hud_emit("state", "idle")
+            continue
         _hud_emit("state", "thinking")
         import jarvis_brain
         reply = jarvis_brain.think(user_input, confirm=_confirm_prompt)
-        speak(reply, no_speak=no_speak)
+        present_reply(reply, no_speak=no_speak, source=jarvis_brain.last_reply_source())
         _hud_emit("state", "idle")
 
 
@@ -659,12 +1044,16 @@ def listen_loop(no_speak=False):
         text_loop(no_speak=no_speak)
         return
 
+    global _stop_listen_enabled
     cfg = jarvis_config.load_config()
     owner = cfg.get("owner_name", "Umesh")
     _register_announcer(no_speak=no_speak)
+    _start_butler(no_speak=no_speak)
+    if not no_speak:
+        _stop_listen_enabled = True  # v5 barge-in: he can say "stop" mid-speech
     _maybe_open_hud()
     print("\n" + "=" * 54)
-    print("  JARVIS AI ASSISTANT v4 - SUPERCOMPUTER - IS LISTENING")
+    print("  JARVIS AI ASSISTANT v5 - AUTONOMOUS BUTLER - IS LISTENING")
     print(f"  Welcome, {owner}. Say commands like:")
     print("    - 'Jarvis, open VS Code' / 'open ChatGPT' / 'open LinkedIn'")
     print("    - 'Play lofi on YouTube'")
@@ -673,18 +1062,20 @@ def listen_loop(no_speak=False):
     print("    - 'Set volume to 50' / 'Toggle dark mode' / 'Lock screen'")
     print("    - 'Note buy milk' / 'Set a timer for 5 minutes'")
     print("    - 'Read my emails' (opens Gmail - Jarvis cannot read it directly)")
+    print("    - 'Read my resume' / 'Read report.pdf' / 'Read more' (reads files aloud)")
     print("    - 'Open file resume.pdf' / 'Send a message to Mom saying hi'")
     print("    - 'Remind me to call Mom tomorrow at 6 pm' / 'Morning briefing'")
-    print("    - 'Type hello world' / 'Play music' / 'What do you think about...?'")
+    print("    - 'Type hello world' / 'Play music' / 'Scroll down' / 'Click Save'")
     print("    - 'Search for electric cars and tell me' / 'Read this website'")
     print("    - 'Show me the job openings in Indianapolis in bioinformatics'")
     print("    - 'Create a python file called hello that prints the date'")
     print("    - 'Run it' / 'Fix it' / 'What are you doing' (background tasks)")
     print("    - 'Show yourself' (opens the live HUD) / 'Open browser'")
-    print("  Press Ctrl+C to stop.")
+    print("  Actions are done silently now - Jarvis speaks only to tell you")
+    print("  something. Say 'stop' while he talks to cut him off.")
+    print("  Press Ctrl+C to stop Jarvis entirely.")
     print("=" * 54 + "\n")
-    # Speak EVERYTHING: the startup greeting is spoken in full, like
-    # every reply in the loop below.
+    # v5: one short spoken line, not a monologue.
     if not no_speak:
         speak(startup_greeting(), no_speak=no_speak)
     else:
@@ -694,6 +1085,9 @@ def listen_loop(no_speak=False):
 
     while True:
         try:
+            # v5 butler: queued alerts/suggestions land between listen
+            # cycles - never over his voice, never mid-sentence.
+            _deliver_butler()
             _hud_emit("state", "listening")
             print("Listening... ", end="", flush=True)
             query = listen_once()
@@ -709,9 +1103,17 @@ def listen_loop(no_speak=False):
             if q_clean in ("quit", "exit", "goodbye", "stop listening"):
                 speak("Goodbye!", no_speak=no_speak)
                 break
+            if _butler_response(q_clean, no_speak=no_speak):
+                continue
+            if _is_pure_stop(q_clean):
+                # v5: "stop" as a whole utterance = stay silent, no reply.
+                stop_speaking()
+                print("(stopped - staying quiet; I'm still listening.)")
+                continue
             _hud_emit("state", "thinking")
             response = jarvis_brain.think(q_clean, confirm=_confirm_prompt)
-            speak(response, no_speak=no_speak)
+            present_reply(response, no_speak=no_speak,
+                          source=jarvis_brain.last_reply_source())
         except KeyboardInterrupt:
             print("\nShutting down Jarvis. Goodbye!")
             break

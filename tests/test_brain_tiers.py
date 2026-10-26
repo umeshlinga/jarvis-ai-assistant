@@ -65,6 +65,12 @@ def main():
           "Umesh Linga, bioinformatician in Indianapolis" in sysmsg)
     check("system prompt carries the brevity rule",
           "two to four" in sysmsg.lower())
+    check("v5 prompt: default answer is one or two sentences",
+          "one or two" in sysmsg.lower())
+    check("v5 prompt: carries the 'six forty-five' style anchor",
+          "six forty-five" in sysmsg.lower())
+    check("v5: chat reply source recorded",
+          jarvis_brain.last_reply_source() == "chat")
 
     # Advisory question -> DEEP tier first model.
     r = jarvis_brain.think("what do you think about changing careers at this point")
@@ -78,6 +84,12 @@ def main():
     check("complete() deep used deep model", RECORDED[-1]["model"] == cfg["groq_models"][0])
     out = jarvis_brain.complete("quick question", deep=False)
     check("complete() fast used fast model", RECORDED[-1]["model"] == cfg["fast_model"])
+
+    # v5: a local action reply records source "action" (speak policy).
+    r = jarvis_brain.think("what time is it")
+    check("v5: time answered by the local action", r is not None and "currently" in r)
+    check("v5: action reply source recorded",
+          jarvis_brain.last_reply_source() == "action")
 
     # History persisted across turns (30-turn memory).
     hist = jarvis_brain._load_history()

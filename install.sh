@@ -9,7 +9,7 @@ cd "$(dirname "$0")"
 
 echo ""
 echo "=================================================================="
-echo "          JARVIS v4 - SUPERCOMPUTER SETUP (Mac M1 / Apple Silicon)"
+echo "          JARVIS v5 - AUTONOMOUS BUTLER SETUP (Mac M1 / Apple Silicon)"
 echo "=================================================================="
 echo ""
 
@@ -165,7 +165,7 @@ fi
 # 8. Next steps ------------------------------------------------------------------
 echo ""
 echo "=================================================================="
-echo "          JARVIS v4.1 SETUP COMPLETE"
+echo "          JARVIS v5 SETUP COMPLETE"
 echo "=================================================================="
 echo ""
 echo "Human voice: Jarvis speaks with a neural human voice (Groq Orpheus,"

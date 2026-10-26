@@ -209,6 +209,216 @@ def main():
     check("latched: later replies go straight to the legacy voice",
           len(legacy_spoken) == n_legacy + 1)
 
+    # =====================================================================
+    # v5: speak policy - silent actions, spoken information, trimming
+    # =====================================================================
+    SILENT_ACKS = [
+        "Opening Google Chrome.", "Opening your browser.",
+        "Volume set to 50 percent.", "Playing music in Spotify.",
+        "Music paused in Spotify.", "Copied report.pdf to your downloads.",
+        "Moved report.pdf to your documents.",
+        "Folder created: receipts, in your desktop.",
+        "Screenshot saved to your Desktop as Jarvis_Screenshot_20261026.png.",
+        "Timer set for 5 minutes. I will speak when it is done.",
+        "Dark mode toggled.", "Locking your screen.", "Typed: hello world",
+        "Pressed Enter.", "Note saved: buy milk",
+        "Reminder created: call mom - due Friday at 06:00 PM.",
+        "Wi-Fi turned off.", "Brightness increased.", "Scrolled up.",
+        "Event added to your calendar: standup, Friday at 09:00 AM, for one hour.",
+    ]
+    for s in SILENT_ACKS:
+        check(f"classify silent: {s[:38]}",
+              jarvis_voice.classify_reply(s) == "silent")
+    SPEAK_INFO = [
+        "It is currently 07:27 AM",
+        "Today is Monday, October 26, 2026",
+        "Your battery is at 87 percent, currently discharging.",
+        "I couldn't find a file matching notes to copy.",
+        "Moving a file needs your confirmation. I did not move report.pdf - ask again and say yes to confirm.",
+        "Your clipboard says: hello there",
+        "System information - Chip: Apple M1; macOS version 26.0.",
+        "Your timer is done - 5 minutes are up.",
+        "Here's what I found about electric cars. Tesla - Tesla builds electric cars.",
+        "I searched for bioinformatics jobs in Indianapolis and opened LinkedIn Jobs with the live results.",
+    ]
+    for s in SPEAK_INFO:
+        check(f"classify speak: {s[:38]}",
+              jarvis_voice.classify_reply(s) == "speak")
+    check("classify: chat always speaks (even ack-shaped openings)",
+          jarvis_voice.classify_reply("Opening thoughts on this are mixed at best.",
+                                      source="chat") == "speak")
+    check("classify: empty is silent", jarvis_voice.classify_reply("") == "silent")
+
+    # present_reply: acks printed but not spoken; info spoken; the
+    # speak_actions config restores the old speak-everything behaviour.
+    audio_out = []
+    _real_speak_audio = jarvis_voice._speak_audio
+    jarvis_voice._speak_audio = lambda text: audio_out.append(text)
+    try:
+        kind = jarvis_voice.present_reply("Opening Google Chrome.")
+        check("present_reply: ack stays silent", kind == "silent" and not audio_out)
+        kind = jarvis_voice.present_reply("It is currently 07:27 AM", source="action")
+        check("present_reply: info is spoken",
+              kind == "speak" and audio_out == ["It is currently 07:27 AM"])
+        jarvis_config.load_config()["speak_actions"] = True
+        try:
+            kind = jarvis_voice.present_reply("Opening Google Chrome.")
+            check("present_reply: speak_actions=True speaks acks again",
+                  kind == "speak" and audio_out[-1] == "Opening Google Chrome.")
+        finally:
+            jarvis_config.load_config()["speak_actions"] = False
+    finally:
+        jarvis_voice._speak_audio = _real_speak_audio
+
+    # trim_for_speech: chat ~55 words by whole sentences; info ~110.
+    long_chat = " ".join(
+        f"Sentence number {i} talks about the plan in some more detail here today."
+        for i in range(8))  # 8 sentences x 13 words = 104 words
+    trimmed = jarvis_voice.trim_for_speech(long_chat, source="chat")
+    check("trim: chat cut to <=55 words", len(trimmed.split()) <= 55)
+    check("trim: chat keeps whole sentences", trimmed.endswith("."))
+    check("trim: info route keeps up to 110 words",
+          jarvis_voice.trim_for_speech(long_chat, source="action") == long_chat)
+    huge = " ".join(["word"] * 80)  # one 80-word "sentence"
+    cut = jarvis_voice.trim_for_speech(huge, source="chat")
+    check("trim: a huge first sentence is hard-cut at the limit",
+          len(cut.split()) == 55 and cut.endswith("…"))
+    check("trim: short text untouched",
+          jarvis_voice.trim_for_speech("It is currently 07:27 AM", source="chat")
+          == "It is currently 07:27 AM")
+
+    # Greeting: one short line now.
+    g = jarvis_voice.startup_greeting()
+    check("v5 greeting is one short line",
+          "I'm listening" in g and len(g) < 60 and "briefing" not in g.lower())
+
+    # =====================================================================
+    # v5: stop / barge-in
+    # =====================================================================
+    spoken = "a long spoken reply about markets weather and other things today"
+    check("stop word alone is a stop command",
+          jarvis_voice._is_stop_command("stop", spoken) is True)
+    check("'jarvis stop' is a stop command",
+          jarvis_voice._is_stop_command("jarvis stop", spoken) is True)
+    check("'stop talking' is a stop command",
+          jarvis_voice._is_stop_command("stop talking", spoken) is True)
+    check("'shut up' is a stop command",
+          jarvis_voice._is_stop_command("shut up", spoken) is True)
+    check("no stop word, no stop",
+          jarvis_voice._is_stop_command("what is the weather", spoken) is False)
+    check("empty transcript, no stop",
+          jarvis_voice._is_stop_command("", spoken) is False)
+    echo_spoken = "remember to stop by the store and stop the car near the market today"
+    check("echo of his own speech is NOT a stop command",
+          jarvis_voice._is_stop_command(
+              "to stop by the store and stop the car near the market today",
+              echo_spoken) is False)
+    check("shouted stop over unrelated speech IS a stop command",
+          jarvis_voice._is_stop_command(
+              "stop stop please stop now", echo_spoken) is True)
+    check("pure stop: 'stop'", jarvis_voice._is_pure_stop("stop") is True)
+    check("pure stop: 'shut up'", jarvis_voice._is_pure_stop("shut up") is True)
+    check("pure stop: 'jarvis stop talking'",
+          jarvis_voice._is_pure_stop("jarvis stop talking") is True)
+    check("NOT pure stop: 'stop the music' (a real command)",
+          jarvis_voice._is_pure_stop("stop the music") is False)
+    check("NOT pure stop: 'stopwatch'",
+          jarvis_voice._is_pure_stop("stopwatch") is False)
+
+    # stop_speaking() kills the live player and sets the flag.
+    class _FakeProc:
+        def __init__(self):
+            self.terminated = False
+
+        def terminate(self):
+            self.terminated = True
+
+    fake_proc = _FakeProc()
+    jarvis_voice._register_player(fake_proc)
+    jarvis_voice._stop_event.clear()
+    jarvis_voice.stop_speaking()
+    check("stop_speaking terminates the live player", fake_proc.terminated is True)
+    check("stop_speaking sets the stop flag", jarvis_voice._stop_event.is_set())
+    jarvis_voice._clear_player()
+    jarvis_voice._stop_event.clear()
+
+    # Chunk queue aborts after a stop: 3 chunks queued, stop lands
+    # during the first playback -> only 1 chunk is ever played and the
+    # legacy voice never takes over.
+    jarvis_voice._tts_neural_broken = False
+    legacy_spoken.clear()
+    played_chunks = []
+
+    def _play_then_stop(path):
+        played_chunks.append(path)
+        jarvis_voice._stop_event.set()  # he barges in mid-first-chunk
+
+    jarvis_voice._play_audio_file = _play_then_stop
+    jarvis_voice._tts_client = lambda provider: _FakeTTSClient()
+    three_chunks = (
+        "This is sentence number one and it is deliberately made fairly long "
+        "so the chunking splits replies into pieces today. "
+        "This is sentence number two and it is also deliberately made long "
+        "enough that it must become its very own chunk here. "
+        "This is sentence number three and it follows the same pattern so "
+        "the test can watch the queue abort after the stop.")
+    jarvis_voice.speak(three_chunks)
+    check("chunk queue aborted after stop (1 of 3 chunks played)",
+          len(played_chunks) == 1)
+    check("stopped speech never falls through to the legacy voice",
+          not legacy_spoken)
+    jarvis_voice._stop_event.clear()
+
+    # Stop-listener thread: hears 'stop' over speech -> stops it.
+    import time as _t
+    jarvis_voice._stop_listen_enabled = True
+    jarvis_voice._stop_listener_disabled = False
+    jarvis_voice._record_stop_window = lambda seconds=1.1: io.BytesIO(b"win")
+    jarvis_voice._transcribe_stop_window = lambda wav: "stop"
+    jarvis_voice._current_spoken_text = spoken
+    jarvis_voice._speech_active.set()
+    jarvis_voice._maybe_start_stop_listener()
+    for _ in range(60):
+        if jarvis_voice._stop_event.is_set():
+            break
+        _t.sleep(0.05)
+    check("stop listener heard 'stop' and stopped the speech",
+          jarvis_voice._stop_event.is_set())
+    jarvis_voice._speech_active.clear()
+    jarvis_voice._stop_event.clear()
+    _t.sleep(0.2)
+
+    # Stop listener: an echo window does NOT stop him (run synchronously;
+    # the fake transcription clears speech_active on its 2nd call).
+    echo_calls = {"n": 0}
+
+    def _echo_transcribe(wav):
+        echo_calls["n"] += 1
+        if echo_calls["n"] >= 2:
+            jarvis_voice._speech_active.clear()
+        return "to stop by the store and stop the car near the market today"
+
+    jarvis_voice._transcribe_stop_window = _echo_transcribe
+    jarvis_voice._current_spoken_text = echo_spoken
+    jarvis_voice._speech_active.set()
+    jarvis_voice._stop_listener_loop()
+    check("stop listener ignores Jarvis hearing himself",
+          not jarvis_voice._stop_event.is_set())
+
+    # Stop listener: a mic that can't open disables it silently.
+    def _boom_record(seconds=1.1):
+        raise RuntimeError("input device busy")
+
+    jarvis_voice._record_stop_window = _boom_record
+    jarvis_voice._stop_listener_disabled = False
+    jarvis_voice._speech_active.set()
+    jarvis_voice._stop_listener_loop()
+    check("mic failure disables the stop listener for the session",
+          jarvis_voice._stop_listener_disabled is True)
+    jarvis_voice._speech_active.clear()
+    jarvis_voice._stop_listen_enabled = False
+    jarvis_voice._current_spoken_text = ""
+
     print(f"\n{len(PASSED)}/{len(PASSED)} voice tests passed.")
 
 

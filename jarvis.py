@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-jarvis.py - Jarvis v4 (Supercomputer, M1) main entry point.
+jarvis.py - Jarvis v5 (Autonomous Butler, M1) main entry point.
 
 Usage:
     python jarvis.py                      Voice loop (default; text fallback if no mic)
@@ -41,7 +41,7 @@ def _banner():
     else:
         brain_line = "Local-only (no Groq/OpenAI key found - local actions still work)"
     print("=" * 54)
-    print("  JARVIS v4.1 - Supercomputer (Mac M1)")
+    print("  JARVIS v5 - Autonomous Butler (Mac M1)")
     print(f"  Owner : {cfg.get('owner_name', 'Umesh')}")
     print(f"  Brain : {brain_line}")
     print(f"  Mic   : {jarvis_voice.mic_status()}")
@@ -52,7 +52,7 @@ def _banner():
 
 
 def main(argv=None):
-    parser = argparse.ArgumentParser(description="Jarvis v4 - Supercomputer AI assistant for Mac M1")
+    parser = argparse.ArgumentParser(description="Jarvis v5 - Autonomous Butler AI assistant for Mac M1")
     parser.add_argument("--text", action="store_true", help="Text console loop instead of voice")
     parser.add_argument("--once", metavar="COMMAND", help="Run a single command and exit")
     parser.add_argument("--no-speak", action="store_true", help="Print replies, do not speak them")

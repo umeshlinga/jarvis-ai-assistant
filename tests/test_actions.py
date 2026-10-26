@@ -600,6 +600,68 @@ def test_v4_code_route_stubbed():
         jarvis_code.create_code = orig
 
 
+def test_v5_gui_verbs():
+    # Scroll up/down already ride the System Events key codes 116/121.
+    CALLS["osa"].clear()
+    r = jarvis_actions.try_action("scroll up")
+    check("v5 scroll up acks", r == "Scrolled up.", repr(r))
+    check("v5 scroll up built key code 116 script",
+          any("key code 116" in s for s in CALLS["osa"]), repr(CALLS["osa"]))
+    CALLS["osa"].clear()
+    r = jarvis_actions.try_action("scroll down")
+    check("v5 scroll down acks", r == "Scrolled down.", repr(r))
+    check("v5 scroll down built key code 121 script",
+          any("key code 121" in s for s in CALLS["osa"]), repr(CALLS["osa"]))
+    # Press keys ride the same table.
+    CALLS["osa"].clear()
+    r = jarvis_actions.try_action("press enter")
+    check("v5 press enter acks", r == "Pressed Enter."
+          and any("key code 36" in s for s in CALLS["osa"]), repr(r))
+    # Switch to <app> activates it by name.
+    CALLS["osa"].clear()
+    r = jarvis_actions.try_action("switch to chrome")
+    check("v5 switch to app activates it", r == "Switched to Google Chrome."
+          and any("activate" in s and "Google Chrome" in s for s in CALLS["osa"]),
+          repr(r))
+    # Click <name>: script built; "clicked" output -> success ack.
+    orig_osa_run = jarvis_actions._osa_run
+    seen = {}
+
+    def fake_osa_run_ok(script):
+        seen["script"] = script
+        return 0, "clicked"
+
+    jarvis_actions._osa_run = fake_osa_run_ok
+    try:
+        r = jarvis_actions.try_action("click Save")
+        check("v5 click success acks", r == "Clicked save.", repr(r))
+        check("v5 click script searches UI elements by name/title",
+              "System Events" in seen["script"] and "entire contents" in seen["script"]
+              and "save" in seen["script"], seen.get("script", "")[:80])
+    finally:
+        jarvis_actions._osa_run = orig_osa_run
+    # Click failure (element not found / no Accessibility) is honest.
+    jarvis_actions._osa_run = lambda script: (1, "")
+    try:
+        r = jarvis_actions.try_action("click Nonexistent Button")
+        check("v5 click failure is honest (Accessibility / not visible)",
+              r is not None and "couldn't click" in r
+              and "Accessibility" in r, repr(r))
+    finally:
+        jarvis_actions._osa_run = orig_osa_run
+
+
+def test_v5_config_defaults():
+    cfg = jarvis_config.load_config()
+    check("v5 config defaults (speak policy + butler)",
+          cfg.get("speak_actions") is False
+          and cfg.get("proactive_enabled") is True
+          and cfg.get("proactive_interval_min") == 30
+          and cfg.get("proactive_jobs") is True,
+          repr({k: cfg.get(k) for k in ("speak_actions", "proactive_enabled",
+                                        "proactive_interval_min", "proactive_jobs")}))
+
+
 def test_stt_config_defaults():
     cfg = jarvis_config.load_config()
     check("stt config defaults", cfg.get("stt_engine") == "auto"
@@ -634,6 +696,7 @@ ALL_TESTS = [
     test_v4_copy_file, test_v4_email_attach, test_v4_web_routes_stubbed,
     test_v4_code_route_stubbed,
     test_v41_job_route_stubbed, test_v41_general_search_route_stubbed,
+    test_v5_gui_verbs, test_v5_config_defaults,
 ]
 
 

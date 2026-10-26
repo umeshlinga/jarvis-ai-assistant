@@ -39,6 +39,19 @@ DEFAULTS = {
     "stt_language": "en-IN",
     # Occasional short follow-up suggestions after a few actions.
     "suggestions": True,
+    # ---- v5 "Autonomous Butler" ----
+    # Speak policy: False (default) = pure action acknowledgements
+    # ("Opening Chrome.", "Volume set to 50 percent.") are PRINTED and
+    # shown on the HUD but NOT spoken - Jarvis speaks only when he has
+    # something to tell you. True restores the pre-v5 behaviour of
+    # speaking every reply in full.
+    "speak_actions": False,
+    # Proactive butler: background checks (Reminders due soon, Calendar
+    # events starting soon, low battery, a morning briefing offer, one
+    # morning job suggestion) delivered between listen cycles.
+    "proactive_enabled": True,
+    "proactive_interval_min": 30,
+    "proactive_jobs": True,
     # ---- v4 "Supercomputer" ----
     # Groq Whisper speech-to-text (uses the same Groq key as the brain).
     # v4.1: whisper-large-v3 (full model) - accuracy over the turbo

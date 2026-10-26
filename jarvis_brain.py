@@ -27,6 +27,17 @@ _client_provider = None
 _history = None  # loaded lazily from disk
 _cooldown_until = 0.0
 
+# v5 speak policy: what produced the most recent think() reply -
+# "action" (a local action / info route), "chat" (the LLM talking), or
+# "fallback" (offline local fallback). jarvis_voice uses it to decide
+# what deserves to be spoken aloud and how long it may run.
+_last_source = None
+
+
+def last_reply_source():
+    """Source of the last think() reply: "action" / "chat" / "fallback" / None."""
+    return _last_source
+
 # v4.1: models that answered "model_not_found" (404) are latched off for
 # the rest of the session. v4.0 retried llama-3.1-8b-instant on EVERY
 # message - Groq no longer offers it on Umesh's key, so every chat paid a
@@ -44,7 +55,7 @@ SYSTEM_PROMPT_TEMPLATE = """You are Jarvis, {owner}'s friendly companion and thi
 Be warm, direct, and conversational - like a smart friend sitting next to him, not a corporate help desk. Address him by name ({owner}) naturally, sometimes - not in every sentence.
 What you know about him: {personal_context} Use this when it is relevant - talk about HIS real situation, his work and his search, instead of giving generic advice that could be for anyone.
 Your answers are SPOKEN aloud, so write the way people talk: natural sentences, no markdown, no bullet points, no headings, no code blocks. Sound like a person talking, never like a document or a plain text file being read out.
-Brevity rule for voice: default answers are two to four natural sentences - enough to be genuinely helpful, short enough to enjoy listening to. Expand and explain in real depth ONLY when he asks you to - "explain in detail", "tell me more", and similar.
+Brevity rule for voice (v5): default answers are ONE or TWO short sentences, in plain words - answer "What's the time?" with "It's six forty-five.", nothing more. Never lecture. Explain more ONLY when he asks you to - "explain", "tell me more", "in detail" - and even then stay within two to four sentences unless he clearly wants a deep dive.
 When he asks what you think, whether something is correct or wrong, or whether he should do something, give him a clear, honest view: say what looks right, what looks wrong, and why, and what you would suggest instead. Never fake certainty - if you do not know a fact, say so plainly, and do not invent numbers, names, or events.
 """
 
@@ -360,22 +371,26 @@ def think(q, confirm=None):
     Main entry point. Local actions first, then the cloud AI (Groq, else
     OpenAI), with automatic cooldown + local fallback on rate limits.
     """
+    global _last_source
     # 1. Opinion/advice questions go to the LLM first - he is asking
     #    Jarvis to think, not to run a command. Offline, say so honestly.
     if is_advisory(q):
         if not providers_available() or time.time() < _cooldown_until:
+            _last_source = "fallback"
             return _advisory_offline(q)
         # fall through to the cloud call below (skip local actions)
     else:
         # 2. Immediate local action check (original order preserved)
         local_done = jarvis_actions.try_action(q, confirm=confirm)
         if local_done:
+            _last_source = "action"
             return local_done
 
     # 3. Cloud providers in configured order. Two speeds (v4): everyday
     #    chat runs on the fast tier; advisory/deep questions on the deep
     #    tier (reasoning models).
     if time.time() < _cooldown_until:
+        _last_source = "fallback"
         return _local_fallback(q, confirm=confirm)
 
     cfg = jarvis_config.load_config()
@@ -397,8 +412,10 @@ def think(q, confirm=None):
         max_turns = int(cfg.get("max_history_turns", 30))
         del history[: max(0, len(history) - max_turns * 2)]
         _save_history()
+        _last_source = "chat"
         return answer
 
+    _last_source = "fallback"
     return _local_fallback(q, confirm=confirm)
 
 
