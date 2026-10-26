@@ -19,8 +19,10 @@ it prints only (pyttsx3 is an optional extra, never a requirement).
 """
 
 import io
+import os
 import subprocess
 import sys
+import tempfile
 import time
 import wave
 
@@ -28,6 +30,8 @@ import jarvis_config
 
 SAMPLE_RATE = 16000
 CHANNELS = 1
+
+_whisper_model_cache = None
 
 
 def speak(text, no_speak=False):
@@ -98,25 +102,114 @@ def _record_wav_bytes(seconds=6):
     return buf
 
 
-def listen_once(seconds=6):
-    """
-    Record once and transcribe with SpeechRecognition's Google recognizer
-    (the same free recognizer the original used, fed via AudioFile so no
-    PyAudio is involved). Returns the transcript, or None if nothing was
-    understood / no mic is available.
-    """
+def _transcribe_google(wav_bytes):
+    """Online transcription via SpeechRecognition's free Google recognizer."""
     import speech_recognition as sr
 
-    wav_bytes = _record_wav_bytes(seconds=seconds)
     recognizer = sr.Recognizer()
     recognizer.dynamic_energy_threshold = True
     recognizer.pause_threshold = 0.8
+    wav_bytes.seek(0)
     with sr.AudioFile(wav_bytes) as source:
         audio = recognizer.record(source)
     try:
         return recognizer.recognize_google(audio).strip()
     except sr.UnknownValueError:
         return None
+
+
+def _whisper_available():
+    try:
+        import faster_whisper  # noqa: F401
+        return True
+    except Exception:
+        return False
+
+
+def _transcribe_whisper(wav_path):
+    """
+    Fully offline transcription with faster-whisper. The model (config
+    whisper_model, default base.en) is downloaded ONCE on first use -
+    that first download needs internet; afterwards it works offline.
+    Raises on failure so the caller can fall back to Google.
+    """
+    global _whisper_model_cache
+    from faster_whisper import WhisperModel
+
+    if _whisper_model_cache is None:
+        cfg = jarvis_config.load_config()
+        model_name = str(cfg.get("whisper_model", "base.en"))
+        _whisper_model_cache = WhisperModel(model_name, device="cpu", compute_type="int8")
+    segments, _info = _whisper_model_cache.transcribe(wav_path, language="en")
+    text = " ".join(seg.text for seg in segments).strip()
+    return text or None
+
+
+def stt_status():
+    """Human line describing the speech-to-text engine that will be used."""
+    cfg = jarvis_config.load_config()
+    engine = str(cfg.get("stt_engine", "auto")).lower()
+    if engine == "whisper":
+        return "whisper (offline)" if _whisper_available() else "whisper requested but not installed - google fallback"
+    if engine == "google":
+        return "google (online)"
+    # auto
+    return "auto -> whisper (offline)" if _whisper_available() else "auto -> google (online)"
+
+
+def listen_once(seconds=6):
+    """
+    Record once and transcribe. Engine from config stt_engine:
+    "whisper" = fully offline (faster-whisper), "google" = online free
+    recognizer, "auto" = Whisper when installed, else Google. A Whisper
+    failure falls back to Google with the reason printed. Returns the
+    transcript, or None if nothing was understood / no mic.
+    """
+    wav_bytes = _record_wav_bytes(seconds=seconds)
+    cfg = jarvis_config.load_config()
+    engine = str(cfg.get("stt_engine", "auto")).lower()
+    use_whisper = engine == "whisper" or (engine == "auto" and _whisper_available())
+    if use_whisper:
+        tmp_path = None
+        try:
+            with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as tf:
+                tmp_path = tf.name
+                wav_bytes.seek(0)
+                tf.write(wav_bytes.read())
+            return _transcribe_whisper(tmp_path)
+        except Exception as e:
+            print(f"[Offline voice (Whisper) failed: {e} - falling back to Google recognizer]")
+        finally:
+            if tmp_path:
+                try:
+                    os.remove(tmp_path)
+                except Exception:
+                    pass
+    return _transcribe_google(wav_bytes)
+
+
+def startup_greeting():
+    """
+    Warm spoken greeting for voice mode: time-of-day hello by name,
+    battery when on battery / low (psutil, guarded), and one suggestion.
+    Returns the greeting text - the caller speaks it in full.
+    """
+    import datetime as _dt
+    cfg = jarvis_config.load_config()
+    owner = cfg.get("owner_name", "Umesh")
+    hour = _dt.datetime.now().hour
+    hello = "Good morning" if hour < 12 else "Good afternoon" if hour < 18 else "Good evening"
+    parts = [f"{hello}, {owner}. I'm Jarvis, and I'm listening."]
+    try:
+        import psutil
+        bat = psutil.sensors_battery()
+        if bat is not None and (not bat.power_plugged or bat.percent < 40):
+            parts.append(f"Your battery is at {round(bat.percent)} percent"
+                         + ("" if bat.power_plugged else " and you're on battery power") + ".")
+    except Exception:
+        pass
+    parts.append("Say 'morning briefing' for your day, or just talk to me - ask me anything, or tell me what to open.")
+    return " ".join(parts)
 
 
 def _strip_wake_word(text):
@@ -168,7 +261,7 @@ def listen_loop(no_speak=False):
     cfg = jarvis_config.load_config()
     owner = cfg.get("owner_name", "Umesh")
     print("\n" + "=" * 54)
-    print("  JARVIS AI ASSISTANT v2 IS ACTIVE AND LISTENING")
+    print("  JARVIS AI ASSISTANT v3 - FULL VOICE CONTROL - IS LISTENING")
     print(f"  Welcome, {owner}. Say commands like:")
     print("    - 'Jarvis, open VS Code' / 'open ChatGPT' / 'open LinkedIn'")
     print("    - 'Play lofi on YouTube'")
@@ -177,8 +270,17 @@ def listen_loop(no_speak=False):
     print("    - 'Set volume to 50' / 'Toggle dark mode' / 'Lock screen'")
     print("    - 'Note buy milk' / 'Set a timer for 5 minutes'")
     print("    - 'Read my emails' (opens Gmail - Jarvis cannot read it directly)")
+    print("    - 'Open file resume.pdf' / 'Send a message to Mom saying hi'")
+    print("    - 'Remind me to call Mom tomorrow at 6 pm' / 'Morning briefing'")
+    print("    - 'Type hello world' / 'Play music' / 'What do you think about...?'")
     print("  Press Ctrl+C to stop.")
     print("=" * 54 + "\n")
+    # Speak EVERYTHING: the startup greeting is spoken in full, like
+    # every reply in the loop below.
+    if not no_speak:
+        speak(startup_greeting(), no_speak=no_speak)
+    else:
+        print(startup_greeting())
 
     import jarvis_brain
 

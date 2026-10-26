@@ -27,9 +27,53 @@ _client_provider = None
 _history = None  # loaded lazily from disk
 _cooldown_until = 0.0
 
-SYSTEM_PROMPT_TEMPLATE = """You are Jarvis, a fast, highly capable AI executive assistant running on {owner}'s Mac.
-Respond concisely in 1-2 sentences. Be direct, helpful, and natural. Do not use filler or formal corporate jargon.
+SYSTEM_PROMPT_TEMPLATE = """You are Jarvis, {owner}'s friendly companion and thinking partner, living on his Mac and talking with him face to face, in voice.
+Be warm, direct, and conversational - like a smart friend sitting next to him, not a corporate help desk. Address him by name ({owner}) naturally, sometimes - not in every sentence.
+Your answers are SPOKEN aloud, so write the way people talk: natural sentences, no markdown, no bullet points, no headings, no code blocks. Explain things properly - talk through what something is, why it matters, and what it means for him - instead of one-line data drops.
+When he asks what you think, whether something is correct or wrong, or whether he should do something, give him a clear, honest view: say what looks right, what looks wrong, and why, and what you would suggest instead. Never fake certainty - if you do not know a fact, say so plainly, and do not invent numbers, names, or events.
+Keep most answers under about 150 words so they are pleasant to listen to, and go longer only when he asks you to explain in depth.
 """
+
+# Opinion / advice phrasings. These go to the LLM even when a local
+# keyword might superficially match - he is asking Jarvis to THINK.
+ADVISORY_PATTERNS = (
+    "what do you think about",
+    "what do you think of",
+    "what do you think",
+    "do you think",
+    "is it correct",
+    "is this correct",
+    "is that correct",
+    "is it right",
+    "is this right",
+    "is that right",
+    "is it wrong",
+    "is this wrong",
+    "is that wrong",
+    "should i",
+    "your opinion",
+    "what's your opinion",
+    "what is your opinion",
+    "advise me",
+    "give me advice",
+    "your advice",
+)
+
+# Commands that must never be mistaken for advice questions.
+_COMMAND_STARTS = ("remind me", "remember", "create", "send", "open", "set",
+                   "add event", "note", "call", "email", "move", "delete",
+                   "trash", "play", "type", "press", "copy", "find")
+
+
+def is_advisory(q):
+    """True for opinion/advice questions that should reach the LLM."""
+    low = " " + (q or "").lower().strip(" .,!?") + " "
+    head = low.strip()
+    if head.startswith(_COMMAND_STARTS):
+        # "remind me I should call..." etc. are commands, not questions.
+        if not any(p in low for p in ("what do you think", "your opinion", "advise me")):
+            return False
+    return any(p in low for p in ADVISORY_PATTERNS)
 
 
 def _history_file():
@@ -168,10 +212,29 @@ def _local_fallback(q, confirm=None):
     action_res = jarvis_actions.try_action(q, confirm=confirm)
     if action_res:
         return action_res
+    try:
+        owner = jarvis_config.load_config().get("owner_name", "Umesh")
+    except Exception:
+        owner = "Umesh"
     return (
-        "I'm in local mode right now - no cloud key is active or the API is cooling down. "
-        "I can still open your apps and sites, control volume, take notes, set timers, "
-        "check battery and system info, and analyze stock charts for you."
+        f"I'm offline right now, {owner} - either there's no internet or my cloud brain is "
+        "cooling down, so I can't really chat or look things up at the moment. But I can still "
+        "do a lot locally: open your apps and any file by name, send iMessages, set reminders "
+        "and calendar events, control music and volume, type and press keys for you, take "
+        "notes and screenshots, and check your battery. Just tell me what you need."
+    )
+
+
+def _advisory_offline(q):
+    try:
+        owner = jarvis_config.load_config().get("owner_name", "Umesh")
+    except Exception:
+        owner = "Umesh"
+    return (
+        f"Honestly, {owner}, I can't think that one through properly while I'm offline - "
+        "my opinions and explanations come from my online brain, and right now I can only "
+        "follow commands and local facts. Ask me again when we're back online, or give me "
+        "something to do on the Mac in the meantime."
     )
 
 
@@ -180,12 +243,19 @@ def think(q, confirm=None):
     Main entry point. Local actions first, then the cloud AI (Groq, else
     OpenAI), with automatic cooldown + local fallback on rate limits.
     """
-    # 1. Immediate local action check (original order preserved)
-    local_done = jarvis_actions.try_action(q, confirm=confirm)
-    if local_done:
-        return local_done
+    # 1. Opinion/advice questions go to the LLM first - he is asking
+    #    Jarvis to think, not to run a command. Offline, say so honestly.
+    if is_advisory(q):
+        if not providers_available() or time.time() < _cooldown_until:
+            return _advisory_offline(q)
+        # fall through to the cloud call below (skip local actions)
+    else:
+        # 2. Immediate local action check (original order preserved)
+        local_done = jarvis_actions.try_action(q, confirm=confirm)
+        if local_done:
+            return local_done
 
-    # 2. Cloud providers in configured order
+    # 3. Cloud providers in configured order
     if time.time() < _cooldown_until:
         return _local_fallback(q, confirm=confirm)
 
@@ -208,7 +278,7 @@ def think(q, confirm=None):
                 resp = client.chat.completions.create(
                     model=model,
                     messages=msgs,
-                    max_tokens=350,
+                    max_tokens=700,
                     temperature=0.6,
                 )
                 answer = resp.choices[0].message.content.strip()

@@ -22,7 +22,22 @@ _TMP_HOME = tempfile.mkdtemp(prefix="jarvis_test_home_")
 os.environ["HOME"] = _TMP_HOME
 
 import jarvis_actions  # noqa: E402
+import jarvis_brain  # noqa: E402
+import jarvis_config  # noqa: E402
 import jarvis_market  # noqa: E402
+
+jarvis_actions._pause = lambda seconds: None  # never really sleep in tests
+
+# Contacts book in the temporary HOME.
+import json as _json  # noqa: E402
+os.makedirs(os.path.join(_TMP_HOME, ".openjarvis"), exist_ok=True)
+with open(os.path.join(_TMP_HOME, ".openjarvis", "contacts.json"), "w") as _f:
+    _json.dump({
+        "Mom": {"phone": "+1 555 010 2030", "email": "mom@example.com"},
+        "Aunt May": {"phone": "", "email": "may@example.com"},
+    }, _f)
+
+FLAGS = {"reminders_fail": False}
 
 # ---------------------------------------------------------------- stubs
 
@@ -51,8 +66,22 @@ def fake_run(cmd):
     if tool == "pbpaste":
         return 0, CLIPBOARD["text"]
     if tool == "mdfind":
-        return 0, "/Users/test/Documents/report.pdf\n/Users/test/Downloads/report-old.pdf"
+        name = cmd[-1] if len(cmd) > 1 else ""
+        if "report" in name:
+            return 0, "/Users/test/Documents/report.pdf\n/Users/test/Downloads/report-old.pdf"
+        return 0, ""
+    if tool == "osascript":
+        script = cmd[-1] if cmd else ""
+        if "Reminders" in script and "make new reminder" not in script:
+            if FLAGS["reminders_fail"]:
+                return 1, ""
+            return 0, "Buy milk\nCall the dentist"
+        return 0, ""
+    if tool == "shortcuts":
+        return 1, ""
     if tool == "networksetup":
+        if "-setairportpower" in cmd:
+            return 0, ""
         return 0, "Current Wi-Fi Network: HomeWifi"
     if tool == "sysctl":
         return 0, "Apple M1"
@@ -193,6 +222,268 @@ def test_market_import_only():
           repr(sorted(jarvis_market.DEFAULT_TICKERS)))
 
 
+# ---------------------------------------------------------------- v3 tests
+
+
+def test_open_file_by_name():
+    CALLS["open"].clear()
+    r = jarvis_actions.try_action("open file report")
+    check("open file by name", r is not None and "report.pdf" in r and
+          any("/Users/test/Documents/report.pdf" in " ".join(a) for a in CALLS["open"]), repr(r))
+
+
+def test_open_file_missing_is_honest():
+    r = jarvis_actions.try_action("open file no_such_file_xyz")
+    check("open missing file honest", r is not None and "couldn't find" in r.lower(), repr(r))
+
+
+def test_contacts_resolve_hit_and_miss():
+    import jarvis_contacts
+    hit = jarvis_contacts.resolve("mom")
+    check("contacts resolve hit", hit is not None and hit[0] == "Mom"
+          and hit[1]["phone"] == "+1 555 010 2030", repr(hit))
+    partial = jarvis_contacts.resolve("aunt")
+    check("contacts resolve partial", partial is not None and partial[0] == "Aunt May", repr(partial))
+    miss = jarvis_contacts.resolve("zanzibar nobody")
+    check("contacts resolve miss", miss is None, repr(miss))
+
+
+def test_imessage_blocked_without_confirm():
+    CALLS["osa"].clear()
+    r = jarvis_actions.try_action("send a message to mom saying hello there")
+    check("imessage blocked without confirm",
+          r is not None and "confirmation" in r.lower() and not CALLS["osa"], repr(r))
+
+
+def test_imessage_sends_with_yes():
+    CALLS["osa"].clear()
+    r = jarvis_actions.try_action("send a message to mom saying hello there",
+                                  confirm=lambda prompt: True)
+    joined = " ".join(CALLS["osa"])
+    check("imessage sent with yes",
+          r is not None and "sent to Mom" in r and "+1 555 010 2030" in joined
+          and "hello there" in joined and "Messages" in joined, repr(r) + " | " + joined)
+
+
+def test_imessage_unknown_contact_never_sends():
+    CALLS["osa"].clear()
+    r = jarvis_actions.try_action("send a message to zanzibar saying hi",
+                                  confirm=lambda prompt: True)
+    check("imessage unknown contact", r is not None and "don't have" in r and not CALLS["osa"], repr(r))
+
+
+def test_whatsapp_no_phone_fallback():
+    CALLS["open"].clear()
+    r = jarvis_actions.try_action("send whatsapp to aunt may saying hello")
+    check("whatsapp no-phone fallback",
+          r is not None and "isn't in your contacts" in r and
+          any("web.whatsapp.com" in " ".join(a) for a in CALLS["open"]), repr(r))
+
+
+def test_whatsapp_with_phone_and_confirm():
+    CALLS["open"].clear()
+    CALLS["osa"].clear()
+    r = jarvis_actions.try_action("send whatsapp to mom saying hello on whatsapp",
+                                  confirm=lambda prompt: True)
+    check("whatsapp wa.me + enter after yes",
+          r is not None and "sent to Mom" in r and
+          any("wa.me/15550102030" in " ".join(a) for a in CALLS["open"]) and
+          any("36" in s for s in CALLS["osa"]), repr(r))
+
+
+def test_email_compose_prefilled_not_sent():
+    CALLS["open"].clear()
+    CALLS["osa"].clear()
+    r = jarvis_actions.try_action("send email to mom@example.com subject Lunch plans saying bring the salad")
+    import urllib.parse as _up
+    urls = [_up.unquote_plus(" ".join(a)) for a in CALLS["open"]]
+    joined = " ".join(urls)
+    check("email compose prefilled",
+          r is not None and "press Send" in r and "view=cm" in joined and
+          "mom@example.com" in joined and "Lunch plans" in joined and
+          "bring the salad" in joined and not CALLS["osa"], repr(r) + " | " + joined)
+
+
+def test_call_facetime():
+    CALLS["open"].clear()
+    r = jarvis_actions.try_action("call mom")
+    check("call facetime url", r is not None and "FaceTime call" in r and
+          any("facetime://" in " ".join(a) and "555 010 2030" in " ".join(a)
+              for a in CALLS["open"]), repr(r))
+
+
+def test_video_call_facetimeaudio():
+    CALLS["open"].clear()
+    r = jarvis_actions.try_action("video call mom")
+    check("video call facetimeaudio", r is not None and "video" in r.lower() and
+          any("facetimeaudio://" in " ".join(a) for a in CALLS["open"]), repr(r))
+
+
+def test_type_text_keystroke():
+    CALLS["osa"].clear()
+    r = jarvis_actions.try_action("type hello world")
+    check("type text", r is not None and "Typed" in r and
+          any('keystroke "hello world"' in s for s in CALLS["osa"]), repr(CALLS["osa"]))
+
+
+def test_keyboard_commands():
+    for phrase, needle in (("press enter", "key code 36"), ("copy that", 'keystroke "c"'),
+                           ("paste", 'keystroke "v"'), ("save this", 'keystroke "s"'),
+                           ("select all", 'keystroke "a"'), ("undo", 'keystroke "z"'),
+                           ("switch app", "key code 48")):
+        CALLS["osa"].clear()
+        r = jarvis_actions.try_action(phrase)
+        check(f"keyboard: {phrase}", r is not None and
+              any(needle in s for s in CALLS["osa"]), repr(CALLS["osa"]))
+
+
+def test_reminder_parse_tomorrow_6pm():
+    CALLS["run"].clear()
+    r = jarvis_actions.try_action("remind me to call mom tomorrow at 6 pm")
+    scripts = " ".join(" ".join(c) for c in CALLS["run"] if c and c[0] == "osascript")
+    tomorrow = jarvis_actions.datetime.date.today() + jarvis_actions.datetime.timedelta(days=1)
+    check("reminder created tomorrow 6pm",
+          r is not None and "Reminder created" in r and "call mom" in scripts
+          and tomorrow.strftime("%A") in scripts and "06:00:00 PM" in scripts,
+          repr(r) + " | " + scripts)
+
+
+def test_calendar_event():
+    CALLS["run"].clear()
+    r = jarvis_actions.try_action("add event dentist tomorrow at 10 am")
+    scripts = " ".join(" ".join(c) for c in CALLS["run"] if c and c[0] == "osascript")
+    check("calendar event", r is not None and "Event added" in r
+          and "Calendar" in scripts and "dentist" in scripts, repr(r))
+
+
+def test_create_folder_temp_home():
+    r = jarvis_actions.try_action("create folder jarvis_test_folder on desktop")
+    path = os.path.join(_TMP_HOME, "Desktop", "jarvis_test_folder")
+    check("create folder", r is not None and "Folder created" in r and os.path.isdir(path), repr(r))
+
+
+def test_create_file_temp_home():
+    r = jarvis_actions.try_action("create file jarvis_test_note.txt on desktop")
+    path = os.path.join(_TMP_HOME, "Desktop", "jarvis_test_note.txt")
+    check("create file", r is not None and "File created" in r and os.path.isfile(path), repr(r))
+
+
+def test_trash_blocked_without_confirm():
+    victim = os.path.join(_TMP_HOME, "Desktop", "trashme.txt")
+    with open(victim, "w") as f:
+        f.write("x")
+    r = jarvis_actions.try_action("trash trashme")
+    check("trash blocked without confirm",
+          r is not None and "confirmation" in r.lower() and os.path.exists(victim), repr(r))
+    r2 = jarvis_actions.try_action("trash trashme", confirm=lambda prompt: True)
+    trashed = os.path.join(_TMP_HOME, ".Trash", "trashme.txt")
+    check("trash moves to ~/.Trash with yes",
+          r2 is not None and "Trash" in r2 and not os.path.exists(victim)
+          and os.path.exists(trashed), repr(r2))
+
+
+def test_brightness():
+    CALLS["osa"].clear()
+    r = jarvis_actions.try_action("brightness up")
+    check("brightness up", r is not None and "Brightness increased" in r and
+          any("144" in s for s in CALLS["osa"]), repr(CALLS["osa"]))
+    r2 = jarvis_actions.try_action("brightness down")
+    check("brightness down", r2 is not None and "Brightness decreased" in r2 and
+          any("145" in s for s in CALLS["osa"]), repr(CALLS["osa"]))
+
+
+def test_wifi_off():
+    CALLS["run"].clear()
+    r = jarvis_actions.try_action("wifi off")
+    flat = [" ".join(c) for c in CALLS["run"]]
+    check("wifi off", r is not None and "Wi-Fi turned off" in r and
+          any("-setairportpower en0 off" in c for c in flat), repr(CALLS["run"]))
+
+
+def test_open_website_dot_com():
+    CALLS["open"].clear()
+    r = jarvis_actions.try_action("open website example dot com")
+    check("open website normalization", r is not None and "example.com" in r and
+          any("https://example.com" in " ".join(a) for a in CALLS["open"]), repr(r))
+
+
+def test_media_controls():
+    CALLS["osa"].clear()
+    r = jarvis_actions.try_action("play music")
+    check("play music", r is not None and "Playing music" in r and bool(CALLS["osa"]), repr(r))
+    r2 = jarvis_actions.try_action("next song")
+    check("next song", r2 is not None and "Next song" in r2, repr(r2))
+
+
+def test_dnd_needs_shortcut_honest():
+    r = jarvis_actions.try_action("turn on do not disturb")
+    check("dnd honest without shortcut", r is not None and "Toggle Focus" in r, repr(r))
+
+
+def test_screen_recording_not_supported():
+    r = jarvis_actions.try_action("take a video of my screen")
+    check("screen recording not supported", r is not None and "isn't supported" in r, repr(r))
+
+
+# ------------------------------------------------------- conversational tests
+
+
+def test_advisory_classification():
+    for phrase in ("what do you think about moving to a new city",
+                   "is it correct that the meeting is on friday",
+                   "is this right", "should i take the new job",
+                   "what is your opinion on this plan", "advise me on saving money"):
+        check(f"advisory: {phrase[:32]}", jarvis_brain.is_advisory(phrase), phrase)
+    for phrase in ("remind me to call mom tomorrow", "open youtube",
+                   "set a timer for 5 minutes", "note remember the milk"):
+        check(f"not advisory: {phrase[:32]}", not jarvis_brain.is_advisory(phrase), phrase)
+
+
+def test_advisory_offline_honest():
+    # No keys exist in the temp HOME, so an opinion question must get the
+    # honest offline answer - not a local action, not a fabrication.
+    r = jarvis_brain.think("what do you think about the time in paris")
+    check("advisory offline honest", r is not None and "offline" in r.lower()
+          and "can't think" in r, repr(r))
+
+
+def test_suggestion_map():
+    check("suggestion for screenshot", bool(jarvis_actions.get_suggestion("screenshot")))
+    check("suggestion for note", bool(jarvis_actions.get_suggestion("note")))
+    check("suggestion for timer", bool(jarvis_actions.get_suggestion("timer")))
+    check("no suggestion for unknown", jarvis_actions.get_suggestion("nope") is None)
+
+
+def test_morning_briefing_assembles():
+    old_market = jarvis_market.market_briefing
+    jarvis_market.market_briefing = lambda: "Nifty is up 1 percent."
+    try:
+        FLAGS["reminders_fail"] = False
+        r = jarvis_actions.morning_briefing()
+        import datetime as _dtmod
+        ok = (any(g in r for g in ("Good morning", "Good afternoon", "Good evening"))
+              and _dtmod.date.today().strftime("%A") in r and "87" in r
+              and "Buy milk" in r and "Nifty" in r)
+        check("briefing assembles greeting+date+battery+reminders+market", ok, repr(r))
+        FLAGS["reminders_fail"] = True
+        jarvis_market.market_briefing = lambda: (_ for _ in ()).throw(RuntimeError("offline"))
+        r2 = jarvis_actions.morning_briefing()
+        check("briefing survives reminders+market failure",
+              r2 is not None and "briefing" in r2.lower(), repr(r2))
+    finally:
+        FLAGS["reminders_fail"] = False
+        jarvis_market.market_briefing = old_market
+
+
+def test_stt_config_defaults():
+    cfg = jarvis_config.load_config()
+    check("stt config defaults", cfg.get("stt_engine") == "auto"
+          and cfg.get("whisper_model") == "base.en"
+          and cfg.get("suggestions") is True
+          and cfg.get("max_history_turns") == 30, repr({k: cfg.get(k) for k in
+              ("stt_engine", "whisper_model", "suggestions", "max_history_turns")}))
+
+
 ALL_TESTS = [
     test_time, test_date, test_battery, test_set_volume_50,
     test_note_taking_temp_home, test_clipboard_copy, test_clipboard_read,
@@ -200,6 +491,20 @@ ALL_TESTS = [
     test_mail_brief_honesty_no_cache, test_timer,
     test_destructive_requires_confirmation, test_unknown_query_returns_none,
     test_market_import_only,
+    test_open_file_by_name, test_open_file_missing_is_honest,
+    test_contacts_resolve_hit_and_miss, test_imessage_blocked_without_confirm,
+    test_imessage_sends_with_yes, test_imessage_unknown_contact_never_sends,
+    test_whatsapp_no_phone_fallback, test_whatsapp_with_phone_and_confirm,
+    test_email_compose_prefilled_not_sent, test_call_facetime,
+    test_video_call_facetimeaudio, test_type_text_keystroke,
+    test_keyboard_commands, test_reminder_parse_tomorrow_6pm,
+    test_calendar_event, test_create_folder_temp_home,
+    test_create_file_temp_home, test_trash_blocked_without_confirm,
+    test_brightness, test_wifi_off, test_open_website_dot_com,
+    test_media_controls, test_dnd_needs_shortcut_honest,
+    test_screen_recording_not_supported, test_advisory_classification,
+    test_advisory_offline_honest, test_suggestion_map,
+    test_morning_briefing_assembles, test_stt_config_defaults,
 ]
 
 

@@ -29,7 +29,13 @@ DEFAULTS = {
     # OpenAI (paid, optional): key in ~/.openjarvis/openai.key or OPENAI_API_KEY
     "openai_model": "gpt-4.1-mini",
     "openai_base_url": "https://api.openai.com/v1",
-    "max_history_turns": 20,
+    "max_history_turns": 30,
+    # Speech-to-text: "auto" (Whisper if installed, else Google) |
+    # "google" (online, free recognizer) | "whisper" (fully offline).
+    "stt_engine": "auto",
+    "whisper_model": "base.en",
+    # Occasional short follow-up suggestions after a few actions.
+    "suggestions": True,
 }
 
 _cache = None

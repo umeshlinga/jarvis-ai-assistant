@@ -1,6 +1,10 @@
-# Optional extras - NOT required for Jarvis v2 to run.
+# Optional extras - NOT required for Jarvis v3 to run.
+# faster-whisper: fully OFFLINE speech-to-text. The model (base.en by
+# default, see config whisper_model) downloads ONCE on first use
+# (~200MB with the package), then voice recognition works offline.
+faster-whisper>=1.0.0
 # PyAudio is only for old SpeechRecognition Microphone() code paths;
-# v2 records with sounddevice instead, which is why PyAudio is optional.
+# v3 records with sounddevice instead, which is why PyAudio is optional.
 # On Apple Silicon, PyAudio needs portaudio first:  brew install portaudio
 PyAudio>=0.2.14
 pyttsx3>=2.90

@@ -1,8 +1,10 @@
-# Jarvis AI Assistant — Advanced (M1)
+# Jarvis AI Assistant — Advanced v3 "Full Voice Control" (M1)
 
 > Built on the original jarvis-ai-assistant by saipradeep77964 (github.com/saipradeep77964/jarvis-ai-assistant), extended by Umesh Linga.
 
 A voice-controlled AI assistant for **MacBook M1 / Apple Silicon (arm64)**, rebuilt and extended from the original project above. The original is **not** Umesh's invention — this version keeps its brain / actions / market design and adds the fixes and features below.
+
+**v3 is "Full Voice Control":** Jarvis doesn't just open apps any more — he opens any file or folder by name, messages and calls your contacts, types and presses keys for you, controls music, creates real Reminders and Calendar events, manages files (with your confirmation), and — just as importantly — he **talks with you**: a friendly conversational companion who explains things, gives honest opinions when you ask, and speaks every reply in full. See "Talking with Jarvis" and the v3 command table below.
 
 ---
 
@@ -114,7 +116,87 @@ Say **"Jarvis, …"** first, or just the command.
 | "Read my emails" / "Check mail" | **Honest answer + opens Gmail** (see limits below) |
 | "Empty trash" / "Restart" / "Shut down" / "Log out" | **Asks for a "yes" confirmation first**, then acts |
 
-Anything else goes to the cloud brain (Groq, else OpenAI) for a short spoken answer.
+Anything else goes to the cloud brain (Groq, else OpenAI) for a spoken answer.
+
+### New in v3 — Full Voice Control
+
+| Say | Jarvis does |
+|---|---|
+| "Open file resume.pdf" / "Open resume file" / "Open my report document" | Finds the file by name (Spotlight, preferring Desktop/Documents/Downloads) and opens the top match — and tells you which one |
+| "Open folder projects" | Finds and opens that folder |
+| "Send a message to Mom saying running late" | iMessage via the Messages app — **after you confirm with "yes"**. Unknown contact → he asks for the number/email and sends nothing |
+| "Send WhatsApp to Mom saying hello" | Opens the real chat via `wa.me/<number>`; after your "yes", waits for it to load and presses Enter for you (needs Accessibility permission, below). No number in contacts → opens WhatsApp Web prefilled and says why |
+| "Email Mom saying see you at six" / "Send email to mom@example.com subject Lunch saying bring salad" | Opens a **prefilled Gmail compose** (to / subject / body). He never sends email silently — you press Send |
+| "Call Mom" / "Video call Mom" / "FaceTime Mom" | Starts a FaceTime / FaceTime-audio call from the contact's number or email |
+| "Type the meeting moved to five" | Types the text into whatever app is active |
+| "Press Enter" / "Press Tab" / "Press Escape" / "Press Space" / "Press Delete" | Presses the key |
+| "Copy that" / "Paste" / "Select all" / "Save this" / "Undo" | Cmd+C / Cmd+V / Cmd+A / Cmd+S / Cmd+Z in the active app |
+| "Find refund policy" | Cmd+F, then types the text |
+| "New tab" / "Close tab" / "Close window" / "Switch app" / "Show desktop" / "Mission Control" / "Minimize window" / "Zoom window" / "Scroll up" / "Scroll down" | Window & navigation control |
+| "Play music" / "Pause music" / "Next song" / "Previous song" | Controls Spotify if installed, otherwise Apple Music |
+| "Play Blinding Lights on Spotify" | Opens the Spotify search for it |
+| "Remind me to call Mom" / "Remind me to pay rent tomorrow at 6 pm" | Creates a **real** reminder in Apple Reminders (due date parsed from today/tomorrow + times like `6 pm` or `18:30`; no time → no due date) |
+| "Add event dentist tomorrow at 10 am" | Creates a **real** 1-hour event in Apple Calendar |
+| "Create folder invoices on desktop" / "Create file notes.txt in documents" | Creates it in that folder |
+| "Move report.pdf to downloads" | Moves the file — **after your "yes"** |
+| "Trash old-draft.docx" / "Delete screenshot.png" | Moves the file to the Trash (never a permanent delete) — **after your "yes"** |
+| "Brightness up" / "Brightness down" | Screen brightness keys |
+| "Wi-Fi on" / "Wi-Fi off" | Toggles Wi-Fi (`networksetup`) |
+| "Turn on Do Not Disturb" | Runs your `Toggle Focus` Shortcut — needs the one-time Shortcut setup in Honest limits |
+| "Read this" / "Read my screen selection" / "What's on my screen" | Copies the selection and speaks it back. Nothing copied/selected → he says so honestly |
+| "Take a video" / "Record my screen" | **Not supported** — he says so (screenshots work) |
+| "Open website example dot com" | Opens https://example.com |
+| "Morning briefing" / "Brief me" / "What's my day" | Spoken briefing: greeting, date, time, battery, your reminders, a market one-liner, and a friendly close |
+
+Date/time parsing for reminders and events is deliberately simple: only **today / tomorrow** and times like `6 pm`, `6:30 pm`, `18:30`. Anything fancier ("next Friday", "in two hours") is not parsed — the reminder is created without a due date and Jarvis tells you what he created.
+
+### Permissions v3 needs (two of them)
+
+1. **Microphone** — System Settings → Privacy & Security → **Microphone** → enable **Terminal** (or your launcher app).
+2. **Accessibility** — System Settings → Privacy & Security → **Accessibility** → enable **Terminal**. Without this, the type/press-key commands and the WhatsApp auto-send Enter press silently do nothing — macOS blocks them, by design.
+
+### Contacts — so Jarvis can message & call people
+
+Jarvis keeps a simple address book at `~/.openjarvis/contacts.json` (the installer creates it from `contacts.example.json`):
+
+1. Open the file: `open ~/.openjarvis/contacts.json` (or edit it in any text editor).
+2. Add your people in this shape:
+   ```json
+   {
+     "Mom": {"phone": "+1 555 010 2030", "email": "mom@example.com"},
+     "Pallavi": {"phone": "+91 98765 43210", "email": ""}
+   }
+   ```
+3. Save. Lookups are case-insensitive and partial ("call mom", "WhatsApp pal…" work). No restart needed.
+
+Phone is used for iMessage, WhatsApp (`wa.me`) and FaceTime; email for iMessage/FaceTime and prefilled email. A name Jarvis doesn't know is never guessed — he asks you for the number/email instead of sending to the wrong person.
+
+### Offline voice (faster-whisper)
+
+By default (`stt_engine: "auto"` in the config) Jarvis uses **faster-whisper locally** when it's installed — your voice never leaves the Mac for transcription — and falls back to Google's online recognizer when it isn't (with the reason printed). Set `stt_engine` to `"whisper"` to force offline or `"google"` to force online.
+
+Install it via the installer's prompt, or any time with:
+
+```bash
+source .venv/bin/activate
+pip install -r requirements-optional.txt
+```
+
+The speech model (`whisper_model`, default `base.en`) **downloads once on first use — that one download needs internet (~200MB with the package). After that, voice recognition works fully offline.** Offline, all the local commands above still work and are spoken in full; open-ended chat is limited (see Honest limits).
+
+---
+
+## Talking with Jarvis
+
+Jarvis is a **conversational companion**, not a vending machine for facts. Just talk to him like a person sitting next to you:
+
+- **Chat:** "How are you today?", "Explain how inflation works like I'm new to it", "Tell me about the Norman 2019 Perturb-seq paper" — he explains properly: what it is, why it matters, what it means for you.
+- **Opinions & advice:** "What do you think about taking a contract role?", "Is it correct that I should learn Rust next?", "Should I apply to this job?" — Jarvis gives a clear, reasoned view: what looks right, what looks wrong, why, and what he'd suggest instead. Opinion questions are routed to his thinking brain even when a local keyword might match. If he doesn't know a fact, he says so plainly — he never invents one.
+- **He remembers the conversation** — history persists across restarts (last 30 turns) in `~/.openjarvis/history.json`, so follow-ups like "and what about the second point?" make sense.
+- **Every reply is spoken in full** in voice mode — there are no silent, print-only answers.
+- **Morning briefing:** on startup he greets you by name and time of day, mentions your battery if it's low or unplugged, and suggests the briefing: say **"morning briefing"** for your date, time, battery, reminders, and a market one-liner.
+
+**Honest limit on "thinking":** his thinking, opinions and open-ended explanations come from the **online AI brain (Groq / OpenAI)**. Offline, he does not truly think — he follows commands and reports local facts, and for an opinion question he'll tell you exactly that and ask you to ask again online.
 
 ---
 
@@ -135,24 +217,29 @@ Text mode is also the automatic fallback whenever no microphone is available.
 - `voice` — macOS `say` voice, default "Samantha" · `speech_rate` — 185
 - `groq_models` — tried in order · `provider_order` — `["groq", "openai"]`
 - `openai_model` — "gpt-4.1-mini" · `openai_base_url` — "https://api.openai.com/v1"
-- `max_history_turns` — 20
+- `max_history_turns` — 30
+- `stt_engine` — "auto" / "google" / "whisper" · `whisper_model` — "base.en" · `suggestions` — true
 
-Files Jarvis keeps in `~/.openjarvis/`: `config.json`, `free.key` (Groq), `openai.key` (optional), `history.json`, `notes.txt`, and optionally `mail_cache.txt` (see below).
+Files Jarvis keeps in `~/.openjarvis/`: `config.json`, `contacts.json`, `free.key` (Groq), `openai.key` (optional), `history.json`, `notes.txt`, and optionally `mail_cache.txt` (see below).
 
 ## Safety
 
 - **No sudo** anywhere — installer or actions.
 - **Keys stay local**: stored only in `~/.openjarvis/*.key` with `chmod 600`, or in environment variables. Never in this repo.
-- **Confirmations**: empty trash, restart, shutdown and logout never run without an explicit "yes".
+- **Confirmations**: sending any message (iMessage, WhatsApp), moving a file, trashing a file, emptying the trash, restarting, shutting down and logging out never run without an explicit "yes".
 - Local actions run on your Mac only; the only network calls are the LLM provider you configured, Google's speech recognizer (below), and Yahoo Finance for market data.
 
 ## Honest limits
 
 - **No real Gmail reading.** Jarvis cannot access your Gmail account. "Read my emails" says exactly that and opens Gmail for you. The only exception: if *you* save a briefing text at `~/.openjarvis/mail_cache.txt`, Jarvis will read that file back to you — it still never fetches mail itself. (The original version invented a fake inbox summary; v2 removes that.)
 - **Market signals are simple moving averages** over Yahoo Finance data — a rough technical indicator, **not financial advice**.
-- **Speech recognition goes to Google's free recognizer**, exactly like the original: your voice audio for each command is sent to Google for transcription. Speech *output* is local (macOS `say`).
+- **Speech recognition**: with faster-whisper installed (the installer's offline-voice option), transcription is **fully local** after the one-time model download. Without it, recognition uses Google's free recognizer, exactly like the original: your voice audio for each command is sent to Google for transcription. See "Offline voice". Speech *output* is always local (macOS `say`).
 - Voice quality, mic pickup, and `say` voices depend on your Mac and macOS permissions — grant the Microphone permission above.
-- WhatsApp "sending" opens WhatsApp Web with the message pre-filled; you press Send yourself.
+- **WhatsApp sending** needs three things at once: the person's number in `contacts.json`, Accessibility permission for Terminal, and your "yes" — only then does Jarvis press Enter for you. Without a number, it opens WhatsApp Web prefilled and says so. **Email never auto-sends**: Jarvis opens a prefilled Gmail compose and you press Send.
+- **Do Not Disturb** needs a one-time Shortcut on your Mac named `Toggle Focus` (Shortcuts app → New Shortcut → action "Set Focus" toggled → name it `Toggle Focus`). Without it, Jarvis says exactly that and changes nothing.
+- **Calls** use FaceTime on the Mac (there is no cellular calling) — they need the contact's number or email.
+- **Offline thinking:** Jarvis's opinions and open-ended explanations need the online brain (Groq / OpenAI). Offline he runs commands and local facts, and says so for anything else — he doesn't fake thinking offline.
+- **Reminders / Calendar parsing** is simple by design (today / tomorrow + `6 pm` / `18:30`); anything fancier loses the due date rather than being mis-dated.
 
 ## Tests
 

@@ -9,7 +9,7 @@ cd "$(dirname "$0")"
 
 echo ""
 echo "=================================================================="
-echo "          JARVIS v2 - ADVANCED SETUP (Mac M1 / Apple Silicon)"
+echo "          JARVIS v3 - FULL VOICE CONTROL SETUP (Mac M1 / Apple Silicon)"
 echo "=================================================================="
 echo ""
 
@@ -101,6 +101,14 @@ else
     echo "Existing config kept at $CONFIG_DIR/config.json"
 fi
 
+if [ ! -f "$CONFIG_DIR/contacts.json" ]; then
+    cp contacts.example.json "$CONFIG_DIR/contacts.json"
+    echo "Contacts book created at $CONFIG_DIR/contacts.json - edit it to add your people"
+    echo "(name -> phone / email), so Jarvis can message and call them by voice."
+else
+    echo "Existing contacts kept at $CONFIG_DIR/contacts.json"
+fi
+
 # 6. Launchers -----------------------------------------------------------------
 cat > jarvis <<'LAUNCHER'
 #!/bin/bash
@@ -122,14 +130,43 @@ DESKTOP_LAUNCHER
     echo "Desktop launcher created: ~/Desktop/Jarvis.command (double-click to start Jarvis)"
 fi
 
-# 7. Next steps ------------------------------------------------------------------
+# 7. Optional offline voice (faster-whisper) --------------------------------
+echo ""
+read -r -p "Install offline voice (faster-whisper, ~200MB with model download on first use)? (y/n): " OFFLINE_VOICE
+if [ "$OFFLINE_VOICE" = "y" ] || [ "$OFFLINE_VOICE" = "Y" ]; then
+    echo "Installing optional packages (faster-whisper etc.)..."
+    pip install -r requirements-optional.txt
+    # Make sure stt_engine=auto is set so Whisper is used when available.
+    "$PYTHON_BIN" - "$CONFIG_DIR/config.json" <<'PYEOF' || true
+import json, sys
+path = sys.argv[1]
+try:
+    with open(path) as f:
+        cfg = json.load(f)
+except Exception:
+    cfg = {}
+cfg["stt_engine"] = "auto"
+with open(path, "w") as f:
+    json.dump(cfg, f, indent=2)
+print("stt_engine=auto set in", path)
+PYEOF
+    echo "Offline voice installed. The Whisper model downloads ONCE on first"
+    echo "use (needs internet that one time), then voice works fully offline."
+else
+    echo "Skipping offline voice - Jarvis will use Google's online recognizer."
+    echo "You can install it any time: pip install -r requirements-optional.txt"
+fi
+
+# 8. Next steps ------------------------------------------------------------------
 echo ""
 echo "=================================================================="
-echo "          JARVIS v2 SETUP COMPLETE"
+echo "          JARVIS v3 SETUP COMPLETE"
 echo "=================================================================="
 echo ""
-echo "IMPORTANT - macOS microphone permission (one time):"
-echo "  System Settings > Privacy & Security > Microphone > enable Terminal"
+echo "IMPORTANT - macOS permissions (one time):"
+echo "  Microphone:   System Settings > Privacy & Security > Microphone > enable Terminal"
+echo "  Accessibility (for typing/key commands + WhatsApp send):"
+echo "                System Settings > Privacy & Security > Accessibility > enable Terminal"
 echo "  (If you launch from Jarvis.command, macOS will prompt you the first time.)"
 echo ""
 echo "Start Jarvis (voice):"
