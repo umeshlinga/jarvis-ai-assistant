@@ -27,6 +27,8 @@ import time
 import wave
 
 import jarvis_config
+import jarvis_hud
+import jarvis_tasks
 
 SAMPLE_RATE = 16000
 CHANNELS = 1
@@ -38,12 +40,36 @@ _whisper_model_cache = None
 # single sentence, which made every reply feel slow.
 _whisper_broken = False
 _whisper_broken_reason = ""
+# v4: Groq Whisper STT failure latch - a 60-second rest, not forever:
+# one bad network minute must not kill the fast ears for the session.
+_groq_stt_broken_until = 0.0
+
+
+def _hud_emit(kind, text):
+    """Feed the live HUD (no-op cost when the server isn't running)."""
+    try:
+        jarvis_hud.emit(kind, text)
+    except Exception:
+        pass
+
+
+def _register_announcer(no_speak=False):
+    """Background tasks speak their updates through this announcer."""
+    def _announce(msg):
+        _hud_emit("task", msg)
+        speak(msg, no_speak=no_speak)
+    try:
+        jarvis_tasks.set_announcer(_announce)
+    except Exception:
+        pass
 
 
 def speak(text, no_speak=False):
     """Print the reply, and speak it with macOS `say` when available."""
     if not text:
         return
+    _hud_emit("state", "speaking")
+    _hud_emit("reply", text)
     print(f"\n[JARVIS]: {text}\n")
     if no_speak:
         return
@@ -179,6 +205,48 @@ def _whisper_available():
         return False
 
 
+def _groq_key():
+    """The Groq key Jarvis already has (brain key store), or None."""
+    try:
+        import jarvis_brain
+        return jarvis_brain.groq_key()
+    except Exception:
+        return None
+
+
+def _transcribe_groq(wav_bytes):
+    """
+    v4 flagship ears: Groq's Whisper API (OpenAI-compatible
+    /audio/transcriptions, model from config groq_stt_model, default
+    whisper-large-v3-turbo). Much faster than the free Google recognizer
+    and far better with Indian-English accents. Uses the SAME key as the
+    brain. Raises on any failure so listen_once can fall through.
+    """
+    key = _groq_key()
+    if not key:
+        raise RuntimeError("no Groq key configured")
+    from openai import OpenAI  # lazy: local mode must work without the SDK
+
+    cfg = jarvis_config.load_config()
+    client = OpenAI(api_key=key, base_url=cfg.get("groq_base_url"))
+    data = wav_bytes.getvalue() if hasattr(wav_bytes, "getvalue") else None
+    if data is None:
+        wav_bytes.seek(0)
+        data = wav_bytes.read()
+    audio_file = io.BytesIO(data)
+    audio_file.name = "jarvis.wav"  # the API uses the suffix for the format
+    language = str(cfg.get("stt_language", "en-IN")).split("-")[0].lower() or "en"
+    resp = client.audio.transcriptions.create(
+        model=str(cfg.get("groq_stt_model", "whisper-large-v3-turbo")),
+        file=audio_file,
+        language=language,
+    )
+    text = getattr(resp, "text", None)
+    if text is None and isinstance(resp, dict):
+        text = resp.get("text")
+    return (text or "").strip() or None
+
+
 def _transcribe_whisper(wav_path):
     """
     Fully offline transcription with faster-whisper. The model (config
@@ -207,50 +275,92 @@ def stt_status():
     """Human line describing the speech-to-text engine that will be used."""
     cfg = jarvis_config.load_config()
     engine = str(cfg.get("stt_engine", "auto")).lower()
+    model = str(cfg.get("groq_stt_model", "whisper-large-v3-turbo"))
+    if engine == "groq":
+        return f"groq {model} (fast, online)" if _groq_key() else "groq requested but no Groq key - google fallback"
     if engine == "whisper":
         return "whisper (offline)" if _whisper_available() else "whisper requested but not installed - google fallback"
     if engine == "google":
         return "google (online)"
-    # auto
+    # auto: Groq Whisper first, then local Whisper, then Google.
+    if _groq_key():
+        return f"auto -> groq {model} (fast ears), whisper/google fallback"
     return "auto -> whisper (offline)" if _whisper_available() else "auto -> google (online)"
+
+
+def _try_whisper(wav_bytes):
+    """Local faster-whisper attempt; latches off for the session on failure."""
+    global _whisper_broken, _whisper_broken_reason
+    if _whisper_broken or not _whisper_available():
+        return None
+    tmp_path = None
+    try:
+        with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as tf:
+            tmp_path = tf.name
+            wav_bytes.seek(0)
+            tf.write(wav_bytes.read())
+        return _transcribe_whisper(tmp_path)
+    except Exception as e:
+        # v3.1 latch: fail ONCE, then never retry the slow broken
+        # load again this session - the next engine takes over silently.
+        _whisper_broken = True
+        _whisper_broken_reason = str(e)
+        print(f"[Offline voice had a problem ({e}). Using the online "
+              f"recognizers for the rest of this session.]")
+        return None
+    finally:
+        if tmp_path:
+            try:
+                os.remove(tmp_path)
+            except Exception:
+                pass
 
 
 def listen_once(seconds=6):
     """
-    Record once and transcribe. Engine from config stt_engine:
-    "whisper" = fully offline (faster-whisper), "google" = online free
-    recognizer, "auto" = Whisper when installed, else Google. A Whisper
-    failure falls back to Google with the reason printed. Returns the
-    transcript, or None if nothing was understood / no mic.
+    Record once and transcribe, trying engines in order.
+
+    stt_engine config:
+    - "auto" (default): Groq Whisper (fast, needs the brain's Groq key)
+      -> local faster-whisper (offline) -> Google free recognizer.
+    - "groq" / "whisper" / "google": that engine first, the remaining
+      ones as fallbacks in the same call.
+    A Groq STT error falls through immediately and latches Groq ears off
+    for 60 seconds; a local-Whisper error latches it off for the session
+    (v3.1). Returns the transcript, or None if nothing was understood.
     """
-    global _whisper_broken, _whisper_broken_reason
+    global _groq_stt_broken_until
     wav_bytes = _record_wav_bytes()
     cfg = jarvis_config.load_config()
     engine = str(cfg.get("stt_engine", "auto")).lower()
-    use_whisper = (engine == "whisper" or (engine == "auto" and _whisper_available())) \
-        and not _whisper_broken
-    if use_whisper:
-        tmp_path = None
-        try:
-            with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as tf:
-                tmp_path = tf.name
-                wav_bytes.seek(0)
-                tf.write(wav_bytes.read())
-            return _transcribe_whisper(tmp_path)
-        except Exception as e:
-            # v3.1 latch: fail ONCE, then never retry the slow broken
-            # load again this session - Google takes over silently.
-            _whisper_broken = True
-            _whisper_broken_reason = str(e)
-            print(f"[Offline voice had a problem ({e}). Using the fast online "
-                  f"recognizer for the rest of this session.]")
-        finally:
-            if tmp_path:
-                try:
-                    os.remove(tmp_path)
-                except Exception:
-                    pass
-    return _transcribe_google(wav_bytes)
+    if engine == "google":
+        order = ["google"]
+    elif engine == "whisper":
+        order = ["whisper", "groq", "google"]
+    elif engine == "groq":
+        order = ["groq", "whisper", "google"]
+    else:
+        order = ["groq", "whisper", "google"]
+
+    for eng in order:
+        if eng == "groq":
+            if not _groq_key() or time.time() < _groq_stt_broken_until:
+                continue
+            try:
+                result = _transcribe_groq(wav_bytes)
+                if result:
+                    return result
+            except Exception as e:
+                _groq_stt_broken_until = time.time() + 60
+                print(f"[Fast ears (Groq) had a problem ({e}) - trying the next "
+                      f"recognizer; Groq ears rest for a minute.]")
+        elif eng == "whisper":
+            result = _try_whisper(wav_bytes)
+            if result:
+                return result
+        else:  # google - the last resort
+            return _transcribe_google(wav_bytes)
+    return None
 
 
 def startup_greeting():
@@ -288,6 +398,9 @@ def _strip_wake_word(text):
 
 def text_loop(no_speak=False):
     print("Text mode - type a command, or 'quit' to exit.")
+    _register_announcer(no_speak=no_speak)
+    _maybe_open_hud()
+    _hud_emit("state", "idle")
     while True:
         try:
             user_input = input("You: ").strip()
@@ -299,9 +412,22 @@ def text_loop(no_speak=False):
         if user_input.lower() in ("quit", "exit", "goodbye"):
             speak("Goodbye!", no_speak=no_speak)
             break
+        _hud_emit("heard", user_input)
+        _hud_emit("state", "thinking")
         import jarvis_brain
         reply = jarvis_brain.think(user_input, confirm=_confirm_prompt)
         speak(reply, no_speak=no_speak)
+        _hud_emit("state", "idle")
+
+
+def _maybe_open_hud():
+    """Auto-open the live HUD once, when it is running and configured."""
+    try:
+        cfg = jarvis_config.load_config()
+        if cfg.get("hud_auto_open", True) and jarvis_hud.is_running():
+            jarvis_hud.open_hud()
+    except Exception:
+        pass
 
 
 def _confirm_prompt(prompt):
@@ -325,8 +451,10 @@ def listen_loop(no_speak=False):
 
     cfg = jarvis_config.load_config()
     owner = cfg.get("owner_name", "Umesh")
+    _register_announcer(no_speak=no_speak)
+    _maybe_open_hud()
     print("\n" + "=" * 54)
-    print("  JARVIS AI ASSISTANT v3 - FULL VOICE CONTROL - IS LISTENING")
+    print("  JARVIS AI ASSISTANT v4 - SUPERCOMPUTER - IS LISTENING")
     print(f"  Welcome, {owner}. Say commands like:")
     print("    - 'Jarvis, open VS Code' / 'open ChatGPT' / 'open LinkedIn'")
     print("    - 'Play lofi on YouTube'")
@@ -338,6 +466,10 @@ def listen_loop(no_speak=False):
     print("    - 'Open file resume.pdf' / 'Send a message to Mom saying hi'")
     print("    - 'Remind me to call Mom tomorrow at 6 pm' / 'Morning briefing'")
     print("    - 'Type hello world' / 'Play music' / 'What do you think about...?'")
+    print("    - 'Search for electric cars and tell me' / 'Read this website'")
+    print("    - 'Create a python file called hello that prints the date'")
+    print("    - 'Run it' / 'Fix it' / 'What are you doing' (background tasks)")
+    print("    - 'Show yourself' (opens the live HUD) / 'Open browser'")
     print("  Press Ctrl+C to stop.")
     print("=" * 54 + "\n")
     # Speak EVERYTHING: the startup greeting is spoken in full, like
@@ -351,12 +483,14 @@ def listen_loop(no_speak=False):
 
     while True:
         try:
+            _hud_emit("state", "listening")
             print("Listening... ", end="", flush=True)
             query = listen_once()
             if not query:
                 print("(didn't catch that)")
                 continue
             print(f'\nYou said: "{query}"')
+            _hud_emit("heard", query)
             q_clean = _strip_wake_word(query)
             if not q_clean:
                 speak("Yes, I'm listening.", no_speak=no_speak)
@@ -364,12 +498,14 @@ def listen_loop(no_speak=False):
             if q_clean in ("quit", "exit", "goodbye", "stop listening"):
                 speak("Goodbye!", no_speak=no_speak)
                 break
+            _hud_emit("state", "thinking")
             response = jarvis_brain.think(q_clean, confirm=_confirm_prompt)
             speak(response, no_speak=no_speak)
         except KeyboardInterrupt:
             print("\nShutting down Jarvis. Goodbye!")
             break
         except Exception as e:
+            _hud_emit("error", str(e))
             print(f"\n[Notice]: {e}")
             time.sleep(0.5)
 

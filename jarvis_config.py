@@ -39,6 +39,27 @@ DEFAULTS = {
     "stt_language": "en-IN",
     # Occasional short follow-up suggestions after a few actions.
     "suggestions": True,
+    # ---- v4 "Supercomputer" ----
+    # Groq Whisper speech-to-text (uses the same Groq key as the brain).
+    # whisper-large-v3-turbo is fast and far better with Indian-English
+    # accents than the free Google recognizer.
+    "groq_stt_model": "whisper-large-v3-turbo",
+    # Fast everyday chat model (Groq). Advisory/deep questions use the
+    # deep tier (groq_models above) instead.
+    "fast_model": "llama-3.1-8b-instant",
+    # Personal context for the brain's system prompt. Local only, in
+    # ~/.openjarvis/config.json - edit it there to change what Jarvis
+    # knows about you.
+    "personal_context": (
+        "Umesh Linga, bioinformatician in Indianapolis, 5+ years experience "
+        "(Cipla, Indiana University, Karyon Bio), currently job searching in "
+        "bioinformatics/data/AI roles, on F-1 STEM OPT."
+    ),
+    # Live visual HUD (local web page showing what Jarvis is doing).
+    "hud_port": 8765,
+    "hud_auto_open": True,
+    # Sandbox folder for code Jarvis writes/runs by voice.
+    "code_dir": "~/jarvis-projects",
 }
 
 _cache = None

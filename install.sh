@@ -9,7 +9,7 @@ cd "$(dirname "$0")"
 
 echo ""
 echo "=================================================================="
-echo "          JARVIS v3 - FULL VOICE CONTROL SETUP (Mac M1 / Apple Silicon)"
+echo "          JARVIS v4 - SUPERCOMPUTER SETUP (Mac M1 / Apple Silicon)"
 echo "=================================================================="
 echo ""
 
@@ -72,6 +72,9 @@ mkdir -p "$CONFIG_DIR"
 if [ ! -f "$CONFIG_DIR/free.key" ] && [ -z "$GROQ_API_KEY" ]; then
     echo ""
     echo "Setup your FREE Groq API key (steps in README.md - console.groq.com/keys):"
+    echo "One free key powers BOTH the brain AND the fast Whisper ears"
+    echo "(Groq speech-to-text: fast, and much better with Indian-English accents"
+    echo " than the free Google recognizer)."
     read -r -p "Enter Groq API Key (or press Enter to skip and use local mode): " GROQ_KEY
     if [ -n "$GROQ_KEY" ]; then
         printf "%s" "$GROQ_KEY" > "$CONFIG_DIR/free.key"
@@ -153,14 +156,15 @@ PYEOF
     echo "Offline voice installed. The Whisper model downloads ONCE on first"
     echo "use (needs internet that one time), then voice works fully offline."
 else
-    echo "Skipping offline voice - Jarvis will use Google's online recognizer."
+    echo "Skipping offline voice - Jarvis will use Groq Whisper ears online"
+    echo "(with Google's recognizer as the last fallback)."
     echo "You can install it any time: pip install -r requirements-optional.txt"
 fi
 
 # 8. Next steps ------------------------------------------------------------------
 echo ""
 echo "=================================================================="
-echo "          JARVIS v3 SETUP COMPLETE"
+echo "          JARVIS v4 SETUP COMPLETE"
 echo "=================================================================="
 echo ""
 echo "IMPORTANT - macOS permissions (one time):"
@@ -175,7 +179,10 @@ echo "Start in text mode:"
 echo "  cd $PWD && ./jarvis --text"
 echo "Run a single command:"
 echo "  cd $PWD && ./jarvis --once \"what time is it\""
-echo "Open the holographic HUD:"
+echo "Live visual HUD (watch Jarvis work, live transcript + tasks):"
+echo "  It starts automatically with Jarvis - say 'show yourself', or open"
+echo "  http://127.0.0.1:8765 in your browser (localhost only)."
+echo "Open the holographic HUD page:"
 echo "  open jarvis_workplace.html"
 echo ""
 

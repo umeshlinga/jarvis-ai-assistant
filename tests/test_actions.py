@@ -475,6 +475,80 @@ def test_morning_briefing_assembles():
         jarvis_market.market_briefing = old_market
 
 
+def test_v4_task_status_route():
+    r = jarvis_actions.try_action("what are you doing")
+    assert r is not None and ("background tasks" in r or "working on" in r or "last" in r.lower()), r
+
+
+def test_v4_hud_route():
+    r = jarvis_actions.try_action("show yourself")
+    assert r is not None and "127.0.0.1" in r, r
+
+
+def test_v4_open_browser():
+    CALLS["open"].clear()
+    r = jarvis_actions.try_action("open browser")
+    assert r == "Opening your browser.", r
+    assert any("google.com" in " ".join(map(str, args)) for args in CALLS["open"]), CALLS["open"]
+
+
+def test_v4_copy_file():
+    src = os.path.join(os.path.expanduser("~"), "Desktop", "copyme.txt")
+    with open(src, "w") as f:
+        f.write("copy me please")
+    r = jarvis_actions.try_action("copy copyme to downloads")
+    assert r == "Copied copyme.txt to your downloads.", r
+    dest = os.path.join(os.path.expanduser("~"), "Downloads", "copyme.txt")
+    assert os.path.exists(dest) and open(dest).read() == "copy me please"
+
+
+def test_v4_email_attach():
+    src = os.path.join(os.path.expanduser("~"), "Desktop", "attachme.pdf")
+    with open(src, "w") as f:
+        f.write("fake pdf")
+    CALLS["osa"].clear()
+    r = jarvis_actions.try_action("email mom and attach attachme.pdf",
+                                  confirm=lambda p: True)
+    assert "opened Mail" in r and "attachme.pdf" in r, r
+    scripts = " ".join(CALLS["osa"])
+    assert "mom@example.com" in scripts, scripts
+    assert "attachme.pdf" in scripts and "attachment" in scripts, scripts
+    assert "send" not in scripts.lower(), scripts  # visible only, NEVER auto-sent
+    # Without confirmation nothing is created.
+    CALLS["osa"].clear()
+    r2 = jarvis_actions.try_action("email mom and attach attachme.pdf")
+    assert "confirmation" in r2.lower() and not CALLS["osa"], r2
+
+
+def test_v4_web_routes_stubbed():
+    import jarvis_web
+    orig_search, orig_read = jarvis_web.search_and_tell, jarvis_web.read_website
+    jarvis_web.search_and_tell = lambda topic: f"SEARCHED:{topic}"
+    jarvis_web.read_website = lambda target: f"READ:{target}"
+    try:
+        r = jarvis_actions.try_action("search for electric cars and tell me")
+        assert r == "SEARCHED:electric cars", r
+        r = jarvis_actions.try_action("read about black holes")
+        assert r == "SEARCHED:black holes", r
+        r = jarvis_actions.try_action("read this website example dot com")
+        assert r == "READ:example dot com", r
+        r = jarvis_actions.try_action("read bbc dot com")
+        assert r == "READ:bbc dot com", r
+    finally:
+        jarvis_web.search_and_tell, jarvis_web.read_website = orig_search, orig_read
+
+
+def test_v4_code_route_stubbed():
+    import jarvis_code
+    orig = jarvis_code.create_code
+    jarvis_code.create_code = lambda name, task: f"MADE {name}: {task}"
+    try:
+        r = jarvis_actions.try_action("create a python file called demo that prints hi")
+        assert r == "MADE demo: prints hi", r
+    finally:
+        jarvis_code.create_code = orig
+
+
 def test_stt_config_defaults():
     cfg = jarvis_config.load_config()
     check("stt config defaults", cfg.get("stt_engine") == "auto"
@@ -505,6 +579,9 @@ ALL_TESTS = [
     test_screen_recording_not_supported, test_advisory_classification,
     test_advisory_offline_honest, test_suggestion_map,
     test_morning_briefing_assembles, test_stt_config_defaults,
+    test_v4_task_status_route, test_v4_hud_route, test_v4_open_browser,
+    test_v4_copy_file, test_v4_email_attach, test_v4_web_routes_stubbed,
+    test_v4_code_route_stubbed,
 ]
 
 

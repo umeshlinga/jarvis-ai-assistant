@@ -29,9 +29,10 @@ _cooldown_until = 0.0
 
 SYSTEM_PROMPT_TEMPLATE = """You are Jarvis, {owner}'s friendly companion and thinking partner, living on his Mac and talking with him face to face, in voice.
 Be warm, direct, and conversational - like a smart friend sitting next to him, not a corporate help desk. Address him by name ({owner}) naturally, sometimes - not in every sentence.
-Your answers are SPOKEN aloud, so write the way people talk: natural sentences, no markdown, no bullet points, no headings, no code blocks. Explain things properly - talk through what something is, why it matters, and what it means for him - instead of one-line data drops.
+What you know about him: {personal_context} Use this when it is relevant - talk about HIS real situation, his work and his search, instead of giving generic advice that could be for anyone.
+Your answers are SPOKEN aloud, so write the way people talk: natural sentences, no markdown, no bullet points, no headings, no code blocks. Sound like a person talking, never like a document or a plain text file being read out.
+Brevity rule for voice: default answers are two to four natural sentences - enough to be genuinely helpful, short enough to enjoy listening to. Expand and explain in real depth ONLY when he asks you to - "explain in detail", "tell me more", and similar.
 When he asks what you think, whether something is correct or wrong, or whether he should do something, give him a clear, honest view: say what looks right, what looks wrong, and why, and what you would suggest instead. Never fake certainty - if you do not know a fact, say so plainly, and do not invent numbers, names, or events.
-Keep most answers under about 150 words so they are pleasant to listen to, and go longer only when he asks you to explain in depth.
 """
 
 # Opinion / advice phrasings. These go to the LLM even when a local
@@ -199,12 +200,79 @@ def _get_client(provider):
     return _client
 
 
-def _models_for(provider):
+def _models_for(provider, tier="deep"):
+    """
+    v4 two-speed brain. Groq has two tiers:
+    - "fast": the small instant model first (config fast_model), with the
+      deep models as fallbacks if it errors.
+    - "deep": the existing groq_models list (reasoning models) - used for
+      advisory / deep questions and by helper modules (summaries, code).
+    OpenAI is a single-model provider and ignores the tier.
+    """
     cfg = jarvis_config.load_config()
     if provider == "groq":
-        models = cfg.get("groq_models") or []
-        return [str(m) for m in models] or ["openai/gpt-oss-20b"]
+        deep = [str(m) for m in (cfg.get("groq_models") or [])] or ["openai/gpt-oss-20b"]
+        if tier == "fast":
+            fast = str(cfg.get("fast_model") or "llama-3.1-8b-instant")
+            return [fast] + [m for m in deep if m != fast]
+        return deep
     return [str(cfg.get("openai_model") or "gpt-4.1-mini")]
+
+
+def _system_prompt():
+    cfg = jarvis_config.load_config()
+    return SYSTEM_PROMPT_TEMPLATE.format(
+        owner=cfg.get("owner_name", "Umesh"),
+        personal_context=cfg.get("personal_context", ""),
+    )
+
+
+def _complete_msgs(msgs, tier="fast", max_tokens=450):
+    """
+    Run one cloud completion in the given tier. Returns the answer text,
+    or None when no provider is available, a rate limit set the cooldown,
+    or every model failed. Callers decide their own fallback.
+    """
+    if time.time() < _cooldown_until:
+        return None
+    for provider in providers_available():
+        try:
+            client = _get_client(provider)
+        except Exception as e:
+            print(f"[Provider {provider} unavailable: {e}]")
+            continue
+        for model in _models_for(provider, tier=tier):
+            try:
+                resp = client.chat.completions.create(
+                    model=model,
+                    messages=msgs,
+                    max_tokens=max_tokens,
+                    temperature=0.6,
+                )
+                return resp.choices[0].message.content.strip()
+            except Exception as e:
+                if _is_rate_limited(e):
+                    wait_sec = _retry_after_seconds(e)
+                    _set_cooldown(wait_sec)
+                    print(f"[Rate-limit triggered: cooldown for {wait_sec}s]")
+                    return None
+                print(f"[Model {model} on {provider} failed: {e}]")
+    return None
+
+
+def complete(user_text, system=None, deep=False, max_tokens=None):
+    """
+    One-shot helper for other modules (web summaries, code generation).
+    Returns the model's text, or None when the cloud brain is unavailable.
+    These calls do not touch the conversation history.
+    """
+    msgs = []
+    if system:
+        msgs.append({"role": "system", "content": system})
+    msgs.append({"role": "user", "content": user_text})
+    if max_tokens is None:
+        max_tokens = 900 if deep else 450
+    return _complete_msgs(msgs, tier="deep" if deep else "fast", max_tokens=max_tokens)
 
 
 def _local_fallback(q, confirm=None):
@@ -255,48 +323,32 @@ def think(q, confirm=None):
         if local_done:
             return local_done
 
-    # 3. Cloud providers in configured order
+    # 3. Cloud providers in configured order. Two speeds (v4): everyday
+    #    chat runs on the fast tier; advisory/deep questions on the deep
+    #    tier (reasoning models).
     if time.time() < _cooldown_until:
         return _local_fallback(q, confirm=confirm)
 
     cfg = jarvis_config.load_config()
-    system_prompt = SYSTEM_PROMPT_TEMPLATE.format(owner=cfg.get("owner_name", "Umesh"))
+    advisory = is_advisory(q)
     history = _load_history()
-    msgs = [{"role": "system", "content": system_prompt}] + history[-12:] + [
+    msgs = [{"role": "system", "content": _system_prompt()}] + history[-12:] + [
         {"role": "user", "content": q}
     ]
-
-    for provider in providers_available():
-        client = None
-        try:
-            client = _get_client(provider)
-        except Exception as e:
-            print(f"[Provider {provider} unavailable: {e}]")
-            continue
-        for model in _models_for(provider):
-            try:
-                resp = client.chat.completions.create(
-                    model=model,
-                    messages=msgs,
-                    max_tokens=700,
-                    temperature=0.6,
-                )
-                answer = resp.choices[0].message.content.strip()
-                history.extend([
-                    {"role": "user", "content": q},
-                    {"role": "assistant", "content": answer},
-                ])
-                max_turns = int(cfg.get("max_history_turns", 20))
-                del history[: max(0, len(history) - max_turns * 2)]
-                _save_history()
-                return answer
-            except Exception as e:
-                if _is_rate_limited(e):
-                    wait_sec = _retry_after_seconds(e)
-                    _set_cooldown(wait_sec)
-                    print(f"[Rate-limit triggered: cooldown for {wait_sec}s]")
-                    return _local_fallback(q, confirm=confirm)
-                print(f"[Model {model} on {provider} failed: {e}]")
+    answer = _complete_msgs(
+        msgs,
+        tier="deep" if advisory else "fast",
+        max_tokens=700 if advisory else 450,
+    )
+    if answer:
+        history.extend([
+            {"role": "user", "content": q},
+            {"role": "assistant", "content": answer},
+        ])
+        max_turns = int(cfg.get("max_history_turns", 30))
+        del history[: max(0, len(history) - max_turns * 2)]
+        _save_history()
+        return answer
 
     return _local_fallback(q, confirm=confirm)
 

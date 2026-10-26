@@ -62,6 +62,47 @@ def main():
     check("whisper NOT retried after latch (speed fix)", calls["whisper"] == 1)
     check("google used for every fallback", calls["google"] == 3)
 
+    # ---- v4: Groq Whisper ears (every layer stubbed - NO network) ----
+    import time as _time
+    jarvis_voice._groq_key = lambda: "test-groq-key"
+    groq_calls = {"n": 0}
+
+    def fake_groq_ok(_wav):
+        groq_calls["n"] += 1
+        return "heard by groq"
+
+    jarvis_voice._transcribe_groq = fake_groq_ok
+    out = jarvis_voice.listen_once()
+    check("auto order: groq ears first", out == "heard by groq" and groq_calls["n"] == 1)
+    check("groq success: google untouched", calls["google"] == 3)
+
+    def fake_groq_boom(_wav):
+        groq_calls["n"] += 1
+        raise RuntimeError("503 from groq")
+
+    jarvis_voice._transcribe_groq = fake_groq_boom
+    out = jarvis_voice.listen_once()
+    check("groq error falls through (whisper latched off -> google)",
+          out == "hello jarvis" and calls["google"] == 4)
+    check("groq latch set for ~60s", jarvis_voice._groq_stt_broken_until > _time.time())
+    n_after_error = groq_calls["n"]
+    out = jarvis_voice.listen_once()
+    check("groq latched: not retried within the minute",
+          groq_calls["n"] == n_after_error and out == "hello jarvis")
+
+    # Latch expired + local whisper healthy -> order groq -> whisper.
+    jarvis_voice._groq_stt_broken_until = 0.0
+    jarvis_voice._whisper_broken = False
+    jarvis_voice._transcribe_whisper = lambda _p: "heard by local whisper"
+    out = jarvis_voice.listen_once()
+    check("groq error then local whisper next", out == "heard by local whisper")
+
+    # Explicit google engine is honoured even with a Groq key present.
+    jarvis_config.load_config()["stt_engine"] = "google"
+    out = jarvis_voice.listen_once()
+    check("explicit google engine honoured", out == "hello jarvis")
+    jarvis_config.load_config()["stt_engine"] = "auto"
+
     print(f"\n{len(PASSED)}/{len(PASSED)} voice tests passed.")
 
 

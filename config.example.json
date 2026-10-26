@@ -1,23 +1,29 @@
 {
-"groq_base_url": "https://api.groq.com/openai/v1",
-"groq_models": [
-"openai/gpt-oss-20b",
-"llama-3.3-70b-versatile",
-"qwen/qwen3.8-27b"
-],
-"max_history_turns": 30,
-"openai_base_url": "https://api.openai.com/v1",
-"openai_model": "gpt-4.1-mini",
-"owner_name": "Umesh",
-"provider_order": [
-"groq",
-"openai"
-],
-"speech_rate": 185,
-"stt_engine": "auto",
-"stt_language": "en-IN",
-"suggestions": true,
-"voice": "Samantha",
-"wake_word": "jarvis",
-"whisper_model": "base.en"
+  "groq_base_url": "https://api.groq.com/openai/v1",
+  "groq_models": [
+    "openai/gpt-oss-20b",
+    "llama-3.3-70b-versatile",
+    "qwen/qwen3.8-27b"
+  ],
+  "max_history_turns": 30,
+  "openai_base_url": "https://api.openai.com/v1",
+  "openai_model": "gpt-4.1-mini",
+  "owner_name": "Umesh",
+  "provider_order": [
+    "groq",
+    "openai"
+  ],
+  "speech_rate": 185,
+  "stt_engine": "auto",
+  "stt_language": "en-IN",
+  "suggestions": true,
+  "voice": "Samantha",
+  "wake_word": "jarvis",
+  "whisper_model": "base.en",
+  "groq_stt_model": "whisper-large-v3-turbo",
+  "fast_model": "llama-3.1-8b-instant",
+  "personal_context": "Umesh Linga, bioinformatician in Indianapolis, 5+ years experience (Cipla, Indiana University, Karyon Bio), currently job searching in bioinformatics/data/AI roles, on F-1 STEM OPT.",
+  "hud_port": 8765,
+  "hud_auto_open": true,
+  "code_dir": "~/jarvis-projects"
 }

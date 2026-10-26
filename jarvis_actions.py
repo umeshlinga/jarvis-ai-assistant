@@ -39,6 +39,16 @@ import urllib.parse
 
 import jarvis_contacts
 import jarvis_market
+import jarvis_tasks
+
+
+def _emit_action(text):
+    """Feed the live HUD's activity stream (v4). Never raises."""
+    try:
+        import jarvis_hud
+        jarvis_hud.emit("action", str(text))
+    except Exception:
+        pass
 
 SITES = {
     "youtube": "https://www.youtube.com",
@@ -371,6 +381,52 @@ def compose_email(target, text, subject=""):
             + " - I don't send email silently, so press Send in Gmail when you're happy with it.")
 
 
+def email_with_attachment(target, file_name, confirm=None):
+    """
+    v4: "email <contact> and attach <file>". Opens Apple Mail with a new
+    VISIBLE message addressed to the contact and the file attached -
+    Jarvis never sends it; Umesh checks it and presses Send himself.
+    Needs the usual confirmation first. If Mail/AppleScript is
+    unavailable, falls back honestly: Gmail compose + Finder reveal.
+    """
+    name, entry = _contact_or_raw(target)
+    to_addr = ""
+    if entry:
+        to_addr = (entry.get("email") or "").strip()
+    if not to_addr and "@" in target:
+        to_addr = target.strip()
+    if not to_addr:
+        return (f"I don't have an email address for {name} in your contacts, so I can't "
+                f"address the email. Add it to ~/.openjarvis/contacts.json and ask again - "
+                f"I didn't create anything.")
+    hits = search_files(file_name)
+    if not hits:
+        return f"I couldn't find a file matching {file_name} to attach."
+    path = hits[0]
+    base = os.path.basename(path)
+    if not _ask_confirmation(f"open Mail with {base} attached, addressed to {name}", confirm):
+        return (f"Attaching a file to an email needs your confirmation. I did not create "
+                f"the email - ask again and say yes to confirm.")
+    script = (
+        'tell application "Mail"\n'
+        'set newMsg to make new outgoing message with properties {subject:"", content:"", visible:true}\n'
+        'tell newMsg\n'
+        f'make new to recipient at end of to recipients with properties {{address:"{_asq(to_addr)}"}}\n'
+        f'make new attachment with properties {{file name:"{_asq(path)}"}} at after last paragraph\n'
+        'end tell\n'
+        'end tell'
+    )
+    if _osa(script):
+        return (f"I've opened Mail with {base} attached, addressed to {name} - "
+                f"check it and press Send when you're happy with it.")
+    # Honest fallback: Gmail compose + show the file in Finder.
+    params = {"view": "cm", "fs": "1", "to": to_addr}
+    _open(["https://mail.google.com/mail/?" + urllib.parse.urlencode(params)])
+    _open(["-R", path])
+    return (f"Apple Mail didn't respond here, so I opened a Gmail compose to {name} "
+            f"and showed you {base} in Finder - attach it manually and press Send.")
+
+
 def start_call(target, video=False):
     name, entry = _contact_or_raw(target)
     ident = ""
@@ -630,12 +686,22 @@ def set_timer(minutes, label="timer"):
     minutes = float(minutes)
     seconds = minutes * 60.0
 
-    def _fire():
-        _say_local(f"Your {label} is done - {minutes:g} minutes are up.")
+    def _job():
+        time.sleep(seconds)
+        return f"Your {label} is done - {minutes:g} minutes are up."
 
-    t = threading.Timer(seconds, _fire)
-    t.daemon = True
-    t.start()
+    try:
+        # v4: timers are background tasks now - the announcer speaks the
+        # result when the timer fires, even if Umesh moved on to talking
+        # about something else.
+        jarvis_tasks.start(f"Timer ({minutes:g} min)", _job)
+    except Exception:
+        def _fire():
+            _say_local(f"Your {label} is done - {minutes:g} minutes are up.")
+
+        t = threading.Timer(seconds, _fire)
+        t.daemon = True
+        t.start()
     unit = "minute" if minutes == 1 else "minutes"
     return _with_suggestion(f"Timer set for {minutes:g} {unit}. I will speak when it is done.", "timer")
 
@@ -662,6 +728,18 @@ def _media_app():
 
 def try_action(q, confirm=None):
     """
+    Public router: runs _try_action_impl and, when an action handled the
+    query, feeds the v4 HUD activity stream. Returns the response string
+    or None (pass to the AI brain).
+    """
+    result = _try_action_impl(q, confirm=confirm)
+    if result is not None:
+        _emit_action(q)
+    return result
+
+
+def _try_action_impl(q, confirm=None):
+    """
     Executes instant deterministic actions. Returns a response string if
     handled, or None to pass the query to the AI brain.
 
@@ -679,9 +757,11 @@ def try_action(q, confirm=None):
         return "Screen recording isn't supported in Jarvis yet - I can take a screenshot if you'd like."
 
     # v3: read what's selected / on screen (via the clipboard, honestly).
-    if any(k in q_clean for k in ("read this", "read my screen", "what's on my screen",
-                                  "what is on my screen", "read the screen", "read selection",
-                                  "read my selection")):
+    # v4 exception: "read this website" belongs to the web reader below.
+    if "website" not in q_clean and "webpage" not in q_clean and any(
+            k in q_clean for k in ("read this", "read my screen", "what's on my screen",
+                                   "what is on my screen", "read the screen", "read selection",
+                                   "read my selection")):
         _osa('tell application "System Events" to keystroke "c" using command down')
         _pause(0.3)
         rc, out = _run(["pbpaste"])
@@ -694,6 +774,99 @@ def try_action(q, confirm=None):
     if q_clean in ("morning briefing", "brief me", "briefing", "what's my day",
                    "what is my day", "my day", "daily briefing"):
         return morning_briefing()
+
+    # --- v4 routes ---------------------------------------------------------
+    # Background task status (jarvis_tasks)
+    if q_clean in ("what are you doing", "task status", "what's running",
+                   "what is running", "what tasks are running", "update me",
+                   "any updates", "what's happening", "what is happening"):
+        return jarvis_tasks.status_text()
+
+    # Live HUD: "show yourself / open the hud"
+    if q_clean in ("show yourself", "show me yourself", "open your screen",
+                   "open the hud", "open hud", "show the hud", "show me the hud",
+                   "open jarvis screen", "open your hud"):
+        try:
+            import jarvis_hud
+            url = jarvis_hud.hud_url()
+            if jarvis_hud.is_running():
+                jarvis_hud.open_hud()
+                return (f"Opening my live screen, {url} - you can watch what I'm "
+                        f"hearing, saying, and doing there, live.")
+            return (f"My live screen lives at {url} - it starts automatically when "
+                    f"Jarvis is running, so open that address in your browser to watch me work.")
+        except Exception:
+            return "I couldn't open my live screen just now."
+
+    # Open his default browser
+    if q_clean in ("open browser", "open the browser", "open my browser",
+                   "launch browser", "open a browser"):
+        _open(["https://www.google.com"])
+        return "Opening your browser."
+
+    # Voice coding (jarvis_code)
+    import jarvis_code
+    m = re.search(r"write\s+code\s+for\s+(.+?)\s+in\s+(?:a\s+)?file\s+(?:called\s+|named\s+)?([A-Za-z0-9_]+)$",
+                  q_orig, re.IGNORECASE)
+    if m:
+        return jarvis_code.create_code(m.group(2), m.group(1))
+    m = re.search(r"(?:create|write|make)\s+(?:a\s+)?(?:python\s+)?(?:file|script|program|code)\s+"
+                  r"(?:called\s+|named\s+)?([A-Za-z0-9_]+)\s+(?:that|which|to)\s+(.+)$",
+                  q_orig, re.IGNORECASE)
+    if m:
+        return jarvis_code.create_code(m.group(1), m.group(2))
+    if q_clean in ("run it", "run the file", "run the code", "run my code",
+                   "run that", "run this", "run the program", "run the script"):
+        return jarvis_code.run_last_code(confirm=confirm)
+    if q_clean in ("open it", "open the code", "open my code", "open the code file"):
+        return jarvis_code.open_last_code()
+    if q_clean in ("fix it", "fix the error", "fix the code", "fix that error", "fix that"):
+        return jarvis_code.fix_last_code()
+
+    # Browser brain (jarvis_web)
+    import jarvis_web
+    if q_clean in ("open the first result", "open first result", "open the top result"):
+        return jarvis_web.open_first_result()
+    if q_clean.startswith("read about "):
+        return jarvis_web.search_and_tell(q_clean[len("read about "):].strip())
+    m = re.search(r"^(?:search|look\s*up|google)(?:\s+for)?\s+(.+?)\s+(?:and\s+)?"
+                  r"(?:tell\s+me|read\s+it\s+to\s+me|read\s+to\s+me).*$", q_clean)
+    if m:
+        return jarvis_web.search_and_tell(m.group(1).strip())
+    m = re.search(r"read\s+(?:this\s+)?(?:website|webpage|web\s+page|site)(?:\s+(?:called\s+)?(.+))?$",
+                  q_clean)
+    if m:
+        target = (m.group(1) or "").strip()
+        if not target:
+            return ("Which website should I read? Say 'read bbc dot com', or "
+                    "'read this website' with an address after it.")
+        return jarvis_web.read_website(target)
+    m = re.search(r"^read\s+((?:https?://)?[\w-]+(?:\s+dot\s+|\.)[\w./-]*)$", q_clean)
+    if m:
+        return jarvis_web.read_website(m.group(1).strip())
+
+    # Email with an attachment (Apple Mail, visible, never auto-sent)
+    m = re.search(r"email\s+(.+?)\s+and\s+attach\s+(.+)$", q_orig, re.IGNORECASE)
+    if m:
+        return email_with_attachment(m.group(1).strip(), m.group(2).strip(), confirm=confirm)
+    m = re.search(r"attach\s+(.+?)\s+to\s+an?\s+email\s+to\s+(.+)$", q_orig, re.IGNORECASE)
+    if m:
+        return email_with_attachment(m.group(2).strip(), m.group(1).strip(), confirm=confirm)
+
+    # Copy a file to a folder (no confirmation needed for a copy)
+    m = re.search(r"copy\s+(.+?)\s+to\s+(downloads|documents|desktop|pictures)$", q_clean)
+    if m:
+        name, where = m.group(1).strip(), m.group(2)
+        hits = search_files(name)
+        if not hits:
+            return f"I couldn't find a file matching {name} to copy."
+        dest_dir = os.path.expanduser(FOLDERS[where])
+        try:
+            os.makedirs(dest_dir, exist_ok=True)
+            shutil.copy2(hits[0], dest_dir)
+            return f"Copied {os.path.basename(hits[0])} to your {where}."
+        except Exception:
+            return f"I couldn't copy {os.path.basename(hits[0])}."
 
     # v3: open a website spoken aloud ("example dot com" -> example.com)
     m = re.match(r"(?:open|go to|visit)\s+(?:the\s+)?website\s+(.+)$", q_clean)

@@ -1,8 +1,30 @@
-# Jarvis AI Assistant — Advanced v3 "Full Voice Control" (M1)
+# Jarvis AI Assistant — Advanced v4 "Supercomputer" (M1)
 
 > Built on the original jarvis-ai-assistant by saipradeep77964 (github.com/saipradeep77964/jarvis-ai-assistant), extended by Umesh Linga.
 
 A voice-controlled AI assistant for **MacBook M1 / Apple Silicon (arm64)**, rebuilt and extended from the original project above. The original is **not** Umesh's invention — this version keeps its brain / actions / market design and adds the fixes and features below.
+
+---
+
+## What's new in v4 — "Supercomputer"
+
+v4 is a speed + awareness upgrade on top of v3. Everything from v3 still works; this is what changed:
+
+**A. Fast, accurate ears (the big fix).** In `auto` mode Jarvis now transcribes your voice with **Groq's Whisper API** (`whisper-large-v3-turbo`) using the same free Groq key as the brain — much faster than the free Google recognizer, and far better with Indian-English accents. The order is: **Groq Whisper → local faster-whisper → Google**. If Groq's ears hiccup (network / rate limit), Jarvis falls through to the next recognizer in the same breath and rests Groq for 60 seconds, then tries it again — one bad minute never kills it. Recording still stops ~1 second after you finish speaking (VAD), so there's no long dead air at the end of every sentence.
+
+**B. Two-speed brain + a companion who knows you.** Everyday chat runs on a fast model (`llama-3.1-8b-instant`); deep / advisory questions ("what do you think…", advice, analysis) use the big models. Spoken answers are **two to four natural sentences** by default — say "explain in detail" or "tell me more" when you want the long version (that kills the old "plain text" feel). The system prompt carries a short personal context (config `personal_context` — who you are, your field, your job search) so answers talk about *your* situation instead of generic advice. Edit it in `~/.openjarvis/config.json`; it lives on your Mac and only travels inside your own Groq/OpenAI requests.
+
+**C. Live visual HUD.** Jarvis now has a face you can watch: a localhost-only page (`http://127.0.0.1:8765`, config `hud_port`) showing his current state (listening / thinking / speaking / working), the live transcript ("You said" / "Jarvis"), and an activity + background-task feed. It opens automatically on startup (config `hud_auto_open`), or say **"show yourself" / "open the hud"** any time. No internet needed — Jarvis serves it himself, bound to 127.0.0.1 only.
+
+**D. Browser brain.** Say **"search for electric cars and tell me"** (or "read about …") and Jarvis fetches DuckDuckGo results and reads you the top 3; say **"open the first result"** to open the top hit. Say **"read bbc dot com"** or **"read this website …"** and he fetches the page and summarises it in 4–5 spoken sentences (if the brain is offline he reads the first sentences raw and tells you so). Say **"open browser"** to open your default browser.
+
+**E. Coding by voice.** Say **"create a python file called hello that prints the date"** (or "write code for X in file Y") and Jarvis writes the code (deep model, code only) into `~/jarvis-projects` (config `code_dir`). **"Open it"** opens it in VS Code or your text editor. **"Run it"** asks for your confirmation first, then runs it as a background task and speaks the result — or the error's last line plus "say fix it". **"Fix it"** sends the code + error back to the model, rewrites the file (keeping a `.bak`), tells you what changed in one line — and never re-runs it without you saying so.
+
+**F. Background tasks that talk.** Timers and code runs now run as background tasks. When one finishes (or fails), Jarvis **announces it out loud, unprompted** — you never have to ask. Ask **"what are you doing"** / **"task status"** any time to hear what's running and what last finished. Announcements land **between listen cycles**, not over your voice mid-sentence — that's how the speak/listen loop works, not a bug.
+
+**G. Files: attach + copy.** **"Email Mom and attach report.pdf"** opens Apple Mail with a new *visible* message addressed to Mom with the file attached — Jarvis **never presses Send**; you check it and send it yourself. If Mail won't cooperate, he opens a Gmail compose + shows you the file in Finder instead, and says so honestly. **"Copy report to downloads"** copies a file to Downloads / Documents / Desktop / Pictures (a copy needs no confirmation; moves and trash still do).
+
+**How the speed works now:** Groq Whisper ears (fast transcription) + a fast model for everyday chat + VAD recording that stops when you stop talking + two-to-four-sentence spoken answers. The slow parts of v3 — free Google recognizer latency, a reasoning model answering small talk, long spoken monologues — are gone.
 
 **v3 is "Full Voice Control":** Jarvis doesn't just open apps any more — he opens any file or folder by name, messages and calls your contacts, types and presses keys for you, controls music, creates real Reminders and Calendar events, manages files (with your confirmation), and — just as importantly — he **talks with you**: a friendly conversational companion who explains things, gives honest opinions when you ask, and speaks every reply in full. See "Talking with Jarvis" and the v3 command table below.
 
@@ -186,9 +208,9 @@ Jarvis keeps a simple address book at `~/.openjarvis/contacts.json` (the install
 
 Phone is used for iMessage, WhatsApp (`wa.me`) and FaceTime; email for iMessage/FaceTime and prefilled email. A name Jarvis doesn't know is never guessed — he asks you for the number/email instead of sending to the wrong person.
 
-### Offline voice (faster-whisper)
+### Speech engines (v4) + offline voice (faster-whisper)
 
-By default (`stt_engine: "auto"` in the config) Jarvis uses **faster-whisper locally** when it's installed — your voice never leaves the Mac for transcription — and falls back to Google's online recognizer when it isn't (with the reason printed). Set `stt_engine` to `"whisper"` to force offline or `"google"` to force online.
+By default (`stt_engine: "auto"` in the config) Jarvis's ears run in this order: **Groq Whisper** (online, using your Groq key — fastest, best with Indian-English) → **faster-whisper locally** (if installed — your voice never leaves the Mac) → **Google's online recognizer**. A Groq ears error falls through in the same listen and rests Groq for 60 seconds. Set `stt_engine` to `"groq"`, `"whisper"` or `"google"` to force one engine.
 
 Install it via the installer's prompt, or any time with:
 
@@ -233,7 +255,8 @@ Text mode is also the automatic fallback whenever no microphone is available.
 - `groq_models` — tried in order · `provider_order` — `["groq", "openai"]`
 - `openai_model` — "gpt-4.1-mini" · `openai_base_url` — "https://api.openai.com/v1"
 - `max_history_turns` — 30
-- `stt_engine` — "auto" / "google" / "whisper" · `whisper_model` — "base.en" · `suggestions` — true
+- `stt_engine` — "auto" / "groq" / "google" / "whisper" · `whisper_model` — "base.en" · `suggestions` — true
+- **v4 keys:** `groq_stt_model` — "whisper-large-v3-turbo" · `fast_model` — "llama-3.1-8b-instant" (chat tier; `groq_models` is the deep tier) · `personal_context` — short bio the brain uses to talk about your situation · `hud_port` — 8765 · `hud_auto_open` — true · `code_dir` — "~/jarvis-projects"
 
 Files Jarvis keeps in `~/.openjarvis/`: `config.json`, `contacts.json`, `free.key` (Groq), `openai.key` (optional), `history.json`, `notes.txt`, and optionally `mail_cache.txt` (see below).
 
@@ -248,7 +271,12 @@ Files Jarvis keeps in `~/.openjarvis/`: `config.json`, `contacts.json`, `free.ke
 
 - **No real Gmail reading.** Jarvis cannot access your Gmail account. "Read my emails" says exactly that and opens Gmail for you. The only exception: if *you* save a briefing text at `~/.openjarvis/mail_cache.txt`, Jarvis will read that file back to you — it still never fetches mail itself. (The original version invented a fake inbox summary; v2 removes that.)
 - **Market signals are simple moving averages** over Yahoo Finance data — a rough technical indicator, **not financial advice**.
-- **Speech recognition**: with faster-whisper installed (the installer's offline-voice option), transcription is **fully local** after the one-time model download. Without it, recognition uses Google's free recognizer, exactly like the original: your voice audio for each command is sent to Google for transcription. See "Offline voice". Speech *output* is always local (macOS `say`).
+- **Speech recognition (v4)**: in `auto` mode your voice audio for each command is sent to **Groq's Whisper API** for transcription (fast, best accent handling). If Groq's ears fail, Jarvis falls back to **faster-whisper locally** (fully local after the one-time model download, if installed) and then to **Google's free recognizer** (audio sent to Google, exactly like the original). Set `stt_engine: "whisper"` to keep transcription fully on the Mac. Speech *output* is always local (macOS `say`).
+- **First-use "Allow" prompts are Apple's, not Jarvis's**: the first time Jarvis touches Messages, Mail, Calendar/Reminders, or Accessibility features, macOS will pop an "Allow" prompt. Click Allow — Jarvis cannot click it for you, and until you do, that one feature stays blocked.
+- **WhatsApp still can't silently attach or send arbitrary files** — it opens the prepared chat (and presses Enter only with a known number + Accessibility + your "yes"). Email attachments go through **Apple Mail, visibly**, and are never auto-sent.
+- **Online brain + ears need internet.** Offline, Jarvis still runs all local commands, and transcription can stay local with faster-whisper — but open-ended thinking, web search/reading, and Groq ears all need a connection, and he says so instead of pretending.
+- **Voice coding is confirmed-first and sandboxed**: generated code is only written into `~/jarvis-projects`, runs only after your "yes", with a 60-second timeout — review code you didn't write before running it, like anywhere else.
+- **He is not literally a supercomputer.** Jarvis is a fast voice agent on your M1: the "supercomputer" feel comes from Groq's cloud models doing the heavy thinking. Heavy coding answers still depend on the online model's quality and the free tier's rate limits.
 - Voice quality, mic pickup, and `say` voices depend on your Mac and macOS permissions — grant the Microphone permission above.
 - **WhatsApp sending** needs three things at once: the person's number in `contacts.json`, Accessibility permission for Terminal, and your "yes" — only then does Jarvis press Enter for you. Without a number, it opens WhatsApp Web prefilled and says so. **Email never auto-sends**: Jarvis opens a prefilled Gmail compose and you press Send.
 - **Do Not Disturb** needs a one-time Shortcut on your Mac named `Toggle Focus` (Shortcuts app → New Shortcut → action "Set Focus" toggled → name it `Toggle Focus`). Without it, Jarvis says exactly that and changes nothing.
@@ -259,5 +287,11 @@ Files Jarvis keeps in `~/.openjarvis/`: `config.json`, `contacts.json`, `free.ke
 ## Tests
 
 ```bash
-python3 tests/test_actions.py   # stubs all system helpers; nothing opens, no network
+python3 tests/test_actions.py     # actions router (stubs all system helpers; nothing opens, no network)
+python3 tests/test_voice.py       # STT engines: v4 Groq-ears order/latch + v3.1 whisper latch (all stubbed)
+python3 tests/test_brain_tiers.py # v4 fast/deep model routing + prompt (stubbed client)
+python3 tests/test_hud.py         # v4 HUD server on an ephemeral port (localhost only)
+python3 tests/test_web.py         # v4 web search/read (HTTP layer stubbed)
+python3 tests/test_code.py        # v4 voice coding in a temp sandbox (LLM stubbed)
+python3 tests/test_tasks.py       # v4 background-task manager + announcer
 ```
